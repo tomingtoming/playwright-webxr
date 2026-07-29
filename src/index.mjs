@@ -56,6 +56,25 @@ export class XRHandle {
     );
   }
 
+  /** Session lifecycle events recorded since page init (see fixture). */
+  async sessionLog() {
+    return this.page.evaluate(() => globalThis.__xrSessionLog ?? []);
+  }
+
+  /**
+   * Wait for a session lifecycle EVENT ('request'|'granted'|'end'|'rejected').
+   * Robust for short-lived sessions that end before state polling can see
+   * them (event log survives the session).
+   */
+  async waitForSessionEvent(event, timeout = 30_000) {
+    await this.page.waitForFunction(
+      (ev) => (globalThis.__xrSessionLog ?? []).some((e) => e.event === ev),
+      event,
+      { timeout },
+    );
+    return (await this.sessionLog()).filter((e) => e.event === event);
+  }
+
   async sessionMode() {
     return this.page.evaluate(() => {
       const s = globalThis.__xrDevice?.activeSession;
@@ -171,6 +190,51 @@ export const test = base.extend({
         // forceInstall: headless Chromium exposes a stub navigator.xr (always
         // "not supported"); IWER >=2.3 silently refuses to clobber it otherwise.
         device.installRuntime({ forceInstall: true });
+        // Event log for session lifecycle: short-lived sessions (an app may
+        // end one within seconds) can outrun state polling when the main
+        // thread is jammed (e.g. WASM boot). Record transitions instead.
+        globalThis.__xrSessionLog = [];
+        const log = (event, detail) =>
+          globalThis.__xrSessionLog.push({ event, detail: detail ?? null, t: performance.now() | 0 });
+        const sys = navigator.xr;
+        const origRequest = sys.requestSession.bind(sys);
+        sys.requestSession = (mode, init) => {
+          log('request', mode);
+          return origRequest(mode, init).then(
+            (session) => {
+              log('granted', mode);
+              // This listener is registered before the app ever sees the
+              // session, so at 'end' it runs ahead of app cleanup — the spec
+              // can define globalThis.__xrEndProbe to snapshot app state
+              // (e.g. an end-reason field) before the app consumes/resets it.
+              session.addEventListener(
+                'end',
+                () => {
+                  let detail = null;
+                  try {
+                    detail = globalThis.__xrEndProbe ? globalThis.__xrEndProbe() : null;
+                  } catch (e) {
+                    detail = 'probe threw: ' + e.message;
+                  }
+                  log('end', detail);
+                },
+                { once: true },
+              );
+              // Who ends the session? Record the call stack — degradation
+              // paths are impossible to tell apart from the 'end' event alone.
+              const origEnd = session.end.bind(session);
+              session.end = () => {
+                log('end-called', String(new Error().stack).split('\n').slice(1, 5).join(' <- '));
+                return origEnd();
+              };
+              return session;
+            },
+            (err) => {
+              log('rejected', String(err));
+              throw err;
+            },
+          );
+        };
         device.stereoEnabled = false; // mono render → screenshots judgeable as one image
         device.ipd = 0;
         globalThis.__xrDevice = device;
