@@ -1,0 +1,28 @@
+{
+  "name": "playwright-webxr",
+  "version": "0.0.1",
+  "description": "Playwright fixture for testing WebXR apps in CI via IWER (no headset required)",
+  "main": "./src/index.mjs",
+  "scripts": {
+    "test": "playwright test"
+  },
+  "keywords": [
+    "playwright",
+    "webxr",
+    "testing",
+    "iwer",
+    "vr",
+    "e2e"
+  ],
+  "author": "",
+  "license": "MIT",
+  "type": "module",
+  "devDependencies": {
+    "@playwright/test": "^1.62.0",
+    "iwer": "^2.3.0"
+  },
+  "exports": {
+    ".": "./src/index.mjs"
+  },
+  "repository": "github:tomingtoming/playwright-webxr"
+}
