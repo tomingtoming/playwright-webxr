@@ -8,6 +8,12 @@ Status: **MVP** (2026-07-29). First real-world catch on day one: a billboard sha
 
 Every project that tests WebXR in CI today hand-rolls the same glue (Babylon.js, VTK, elizaOS all built private variants). This package aims to be the turnkey version: install, import, write a test.
 
+## Install
+
+```sh
+npm i -D playwright-webxr @playwright/test
+```
+
 ## Usage
 
 ```js
@@ -61,7 +67,7 @@ export default defineConfig({
 
 - IWER does not emulate multiview / MSAA>1 — bugs specific to those paths cannot be caught here ([IWER #196](https://github.com/meta-quest/immersive-web-emulation-runtime/issues/196))
 - Frame-boundary determinism is best-effort; visual comparison should use diff tolerances
-- Planned: ActionRecorder session replay (record on a real Quest, replay in CI), GitHub Actions template, npm publish, framework sample matrix (three.js / Babylon / react-three/xr)
+- Planned: ActionRecorder session replay (record on a real Quest, replay in CI), GitHub Actions template, framework sample matrix (three.js / Babylon / react-three/xr)
 
 ## License
 

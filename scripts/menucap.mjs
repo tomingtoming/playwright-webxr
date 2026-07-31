@@ -46,7 +46,8 @@ await page.addInitScript(() => {
     else globalThis.__xrSession.requestAnimationFrame(() => setTimeout(grab, 0));
   });
 });
-await page.goto('https://ysflight-web-staging.toming.workers.dev/index.html');
+if (!process.env.STAGING_URL) { console.error('menucap: set STAGING_URL'); process.exit(1); }
+await page.goto(process.env.STAGING_URL);
 const vrBtn = page.locator('button:has-text("VRでプレイ開始")').first();
 await vrBtn.waitFor({ state: 'visible', timeout: 120000 });
 await vrBtn.click();
@@ -55,7 +56,7 @@ await page.waitForTimeout(8000);
 for (const mode of ['raf']) {
   const r = await page.evaluate((m) => globalThis.__capture(m), mode);
   if (r && r.dataUrl) {
-    fs.writeFileSync('/home/toming/playwright-webxr/out/ysf_menu_' + mode + '.png', Buffer.from(r.dataUrl.split(',')[1], 'base64'));
+    fs.writeFileSync('out/ysf_menu_' + mode + '.png', Buffer.from(r.dataUrl.split(',')[1], 'base64'));
     console.log(mode + ': lum=' + r.lum.toFixed(4));
   } else console.log(mode + ': no data');
 }

@@ -26,9 +26,8 @@
  */
 import { test, expect } from '../src/index.mjs';
 
-const URL =
-  process.env.STAGING_URL ??
-  'https://ysflight-web-staging.toming.workers.dev/index.html';
+const URL = process.env.STAGING_URL;
+test.skip(!URL, 'project-specific dogfood: set STAGING_URL to run');
 
 test('VR entry degrades gracefully back to flat on GPU-less runner', async ({ page, xr }) => {
   test.setTimeout(300_000);

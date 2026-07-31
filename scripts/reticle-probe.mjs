@@ -18,7 +18,8 @@ const require = createRequire(import.meta.url);
 const iwerPath = require.resolve('iwer/build/iwer.min.js');
 const polyPath = require.resolve('webxr-layers-polyfill/build/webxr-layers-polyfill.min.js');
 
-const URL = process.env.STAGING_URL ?? 'https://ysflight-web-staging.toming.workers.dev/index.html';
+const URL = process.env.STAGING_URL;
+if (!URL) { console.error('reticle-probe: set STAGING_URL'); process.exit(1); }
 
 const browser = await chromium.launch({
   args: ['--use-angle=vulkan', '--enable-features=Vulkan', '--ignore-gpu-blocklist', '--no-sandbox'],
