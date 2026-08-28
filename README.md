@@ -63,6 +63,39 @@ export default defineConfig({
 - Two CLI-roundtrip clicks are too slow to register as `dblclick`; dispatch real events or use element-targeted actions.
 - Assertions on UI text must be locale-aware (`locale` in config), or they silently wait forever on the "wrong" language.
 
+## What emulation can and cannot prove
+
+**The emulator is a child of the spec; the real device is a child of its
+implementation.** A green run here proves your app math agrees with the spec —
+as IWER and the layers polyfill read it. It cannot prove the device agrees.
+
+The case that taught us this: on Quest, an app's aim reticle drifted off the
+ray everywhere except the board's centre. Five rounds of app-side audits under
+emulation kept returning "self-consistent" — pose math, quad transforms, hit
+tests, ray reprojection, all agreed to within 1.3mm. They were all correct:
+Quest Browser's compositor displays an `XRQuadLayer` at **2× its declared
+`width`/`height`** (a half-extent reading), while the spec text — and therefore
+IWER + polyfill — reads them as full extents. The emulator agreed with the app
+because both were children of the same spec; the bug lived in the divergent
+implementation, where no amount of emulated testing could see it.
+
+What resolved it was measuring the device itself: a diagnostic URL knob that
+scales only the *declared* layer size (`?vrlayerscale=`), A/B'd on the headset.
+At `0.5` the reticle matched the ray across the whole board → the device
+applies 2×. One session, conclusive.
+
+Practical rules:
+
+- Use this fixture to pin down **your** math. When it passes and the symptom is
+  device-only, stop re-auditing the app — the remaining suspect is the
+  implementation, and the next test must run on the device.
+- Ship diagnostic knobs in the app (scale factors, layer toggles) so a headset
+  A/B takes one URL edit instead of a rebuild. That is what actually converts
+  "works in CI, broken on device" into a verdict.
+- When emulator and device disagree, one of them diverges from the spec —
+  either way it is upstream-reportable, and your app-side "fix" is a
+  workaround to annotate as such.
+
 ## Limitations / roadmap
 
 - IWER does not emulate multiview / MSAA>1 — bugs specific to those paths cannot be caught here ([IWER #196](https://github.com/meta-quest/immersive-web-emulation-runtime/issues/196))
