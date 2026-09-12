@@ -11,7 +11,8 @@
  */
 import { test, expect } from '../src/index.mjs';
 
-const URL = 'https://caelum.toming.app/viewer/';
+const URL = process.env.CAELUM_URL;
+test.skip(!URL, 'project-specific dogfood: set CAELUM_URL to run');
 const OUT = process.env.OUT_DIR ?? './out';
 
 test('caelum viewer in emulated VR: session, render, roll/yaw poses', async ({ page, xr }) => {

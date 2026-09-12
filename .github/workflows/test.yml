@@ -1,0 +1,25 @@
+name: Test
+on: [push, pull_request]
+permissions:
+  contents: read
+jobs:
+  fixture:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        iwer: ['2.3.0', '2.4.0']
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm install --no-save iwer@${{ matrix.iwer }}
+      - run: npx playwright install --with-deps chromium
+      - run: npm test
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: test-results-iwer-${{ matrix.iwer }}
+          path: test-results/

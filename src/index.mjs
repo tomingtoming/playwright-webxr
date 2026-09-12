@@ -14,6 +14,7 @@
 import { test as base, expect } from '@playwright/test';
 import { createRequire } from 'node:module';
 import fs from 'node:fs/promises';
+import { installRuntime, readDiagnostics } from './runtime.mjs';
 
 const require = createRequire(import.meta.url);
 
@@ -32,54 +33,118 @@ export class XRHandle {
    * (honest E2E path: user gesture → requestSession). Pass a selector or
    * button text; defaults cover three.js VRButton and common variants.
    */
-  async enterVR({ button } = {}) {
+  async enterVR({ button, force = false, timeout = 10_000 } = {}) {
+    checkTimeout(timeout);
+    const deadline = Date.now() + timeout;
+    const remaining = () => Math.max(1, deadline - Date.now());
     const candidates = button
       ? [button]
       : ['#VRButton', 'button:has-text("ENTER VR")', 'text=/enter vr/i'];
-    for (const sel of candidates) {
-      const loc = this.page.locator(sel).first();
-      if ((await loc.count()) > 0 && (await loc.isVisible().catch(() => false))) {
-        await loc.click({ force: true });
-        await this.waitForSession();
-        return;
+    let target;
+    while (!target && Date.now() < deadline) {
+      for (const selector of candidates) {
+        const locator = this.page.locator(selector);
+        // A hidden first match must not mask a later visible entry button.
+        for (let i = 0, count = await locator.count(); i < count; i++) {
+          if (await locator.nth(i).isVisible()) {
+            target = locator.nth(i);
+            break;
+          }
+        }
+        if (target) break;
       }
+      if (!target) await this.page.waitForTimeout(Math.min(50, remaining()));
     }
-    throw new Error(`enterVR: no VR button found (tried: ${candidates.join(', ')})`);
+    if (!target) {
+      const counts = await Promise.all(candidates.map(selector => this.page.locator(selector).count()));
+      const reason = counts.some(Boolean) ? 'VR button found but not visible' : 'no VR button found';
+      throw new Error(`enterVR: ${reason} within ${timeout}ms (tried: ${candidates.join(', ')})`);
+    }
+    const after = await this.sessionCursor();
+    try {
+      await target.click({ force, timeout: remaining() });
+    } catch (error) {
+      throw new Error(`enterVR: VR button click failed: ${error.message}`, { cause: error });
+    }
+    let handle;
+    try {
+      handle = await this.page.waitForFunction(after => {
+        return (globalThis.__xrSessionLog ?? []).find(entry =>
+          entry.sequence > after && entry.mode === 'immersive-vr' &&
+          (entry.event === 'granted' || entry.event === 'rejected'));
+      }, after, { timeout: remaining() });
+    } catch (error) {
+      throw new Error(`enterVR: no new immersive-vr session granted or rejected within ${timeout}ms`, { cause: error });
+    }
+    const outcome = await handle.jsonValue();
+    await handle.dispose();
+    if (outcome.event === 'rejected') {
+      throw new Error(`enterVR: session request ${outcome.requestId} rejected: ${outcome.detail}`);
+    }
+    const isCurrent = await this.page.evaluate(id => {
+      const active = globalThis.__xrDevice?.activeSession;
+      const record = active && globalThis.__pwWebXR?.sessions.get(active);
+      return record?.sessionId === id && !record.ended;
+    }, outcome.sessionId);
+    if (!isCurrent) {
+      throw new Error(`enterVR: ${outcome.sessionId} was granted but is no longer active; inspect sessionLog()`);
+    }
   }
 
   /** Wait until an XRSession is live on the emulated device. */
   async waitForSession(timeout = 10_000) {
-    await this.page.waitForFunction(
-      () => globalThis.__xrDevice?.activeSession != null,
-      undefined,
-      { timeout },
-    );
+    const handle = await this.page.waitForFunction(() => {
+      const session = globalThis.__xrDevice?.activeSession;
+      return session && !globalThis.__pwWebXR?.sessions.get(session)?.ended;
+    }, undefined, { timeout });
+    await handle.dispose();
   }
 
-  /** Session lifecycle events recorded since page init (see fixture). */
+  /** Lifecycle history for this document; sequence and IDs reset on navigation. */
   async sessionLog() {
     return this.page.evaluate(() => globalThis.__xrSessionLog ?? []);
   }
 
+  /** Save before an action; use { after: cursor } to wait only for newer events. */
+  async sessionCursor() {
+    return this.page.evaluate(() => globalThis.__pwWebXR?.sequence ?? 0);
+  }
+
   /**
-   * Wait for a session lifecycle EVENT ('request'|'granted'|'end'|'rejected').
-   * Robust for short-lived sessions that end before state polling can see
-   * them (event log survives the session).
+   * Wait for lifecycle history, including short-lived sessions. The numeric
+   * timeout overload remains supported. after is exclusive; sessionId filters
+   * granted/end/end-called events (requests and rejections have no session).
    */
-  async waitForSessionEvent(event, timeout = 30_000) {
-    await this.page.waitForFunction(
-      (ev) => (globalThis.__xrSessionLog ?? []).some((e) => e.event === ev),
-      event,
-      { timeout },
-    );
-    return (await this.sessionLog()).filter((e) => e.event === event);
+  async waitForSessionEvent(event, options = {}) {
+    const { timeout = 30_000, after = 0, sessionId } =
+      typeof options === 'number' ? { timeout: options } : options;
+    const handle = await this.page.waitForFunction(({ event, after, sessionId }) => {
+      const matches = (globalThis.__xrSessionLog ?? []).filter(entry =>
+        entry.event === event && entry.sequence > after &&
+        (sessionId === undefined || entry.sessionId === sessionId));
+      return matches.length ? matches : false;
+    }, { event, after, sessionId }, { timeout });
+    const matches = await handle.jsonValue();
+    await handle.dispose();
+    return matches;
   }
 
   async sessionMode() {
     return this.page.evaluate(() => {
-      const s = globalThis.__xrDevice?.activeSession;
-      return s ? (s.mode ?? 'unknown-session') : null;
+      const session = globalThis.__xrDevice?.activeSession;
+      const record = session && globalThis.__pwWebXR?.sessions.get(session);
+      return session && !record?.ended ? (record?.mode ?? 'unknown-session') : null;
     });
+  }
+
+  /** Sample the active session, selected canvas, GPU and base-layer eye viewports. */
+  async diagnostics({ canvas = 'canvas', timeout = 2_000 } = {}) {
+    checkTimeout(timeout);
+    const result = await this.page.evaluate(readDiagnostics, { canvas, timeout });
+    // IWER can override navigator.userAgent to a Quest profile. The browser's
+    // actual version must come from Playwright, not that emulated string.
+    result.runtime.browserVersion = this.page.context().browser()?.version() ?? null;
+    return result;
   }
 
   /**
@@ -157,90 +222,68 @@ export class XRHandle {
    * Screenshot the WebGL canvas via toDataURL (robust where page.screenshot
    * times out on continuously-rendering canvases / software GL).
    */
-  async screenshot(path) {
-    const dataUrl = await this.page.evaluate(
-      () =>
-        new Promise((res) => {
-          const c = document.querySelector('canvas');
-          if (!c) return res(null);
-          requestAnimationFrame(() => res(c.toDataURL('image/png')));
-        }),
-    );
-    if (!dataUrl) throw new Error('screenshot: no canvas');
-    const b64 = dataUrl.split(',')[1];
-    await fs.writeFile(path, Buffer.from(b64, 'base64'));
-    return path;
+  async screenshot(path, { canvas = 'canvas', timeout = 5_000, metadata = false } = {}) {
+    checkTimeout(timeout);
+    const capture = await this.page.evaluate(({ selector, timeout }) => new Promise((resolve, reject) => {
+      const target = document.querySelector(selector);
+      if (!(target instanceof HTMLCanvasElement)) {
+        reject(new Error(`screenshot: no canvas matches ${selector}`));
+        return;
+      }
+      let frameId;
+      const timer = setTimeout(() => {
+        cancelAnimationFrame(frameId);
+        reject(new Error(`screenshot: timed out waiting for a frame (${selector})`));
+      }, timeout);
+      frameId = requestAnimationFrame(() => {
+        clearTimeout(timer);
+        try {
+          const dataUrl = target.toDataURL('image/png');
+          if (!dataUrl.startsWith('data:image/png;base64,')) throw new Error('canvas has no encodable pixels');
+          const active = globalThis.__xrDevice?.activeSession;
+          resolve({
+            dataUrl, width: target.width, height: target.height, canvas: selector,
+            sessionId: active ? globalThis.__pwWebXR?.sessions.get(active)?.sessionId ?? null : null,
+            capture: 'canvas',
+          });
+        } catch (error) {
+          reject(new Error(`screenshot: cannot capture ${selector}: ${error.message}`));
+        }
+      });
+    }), { selector: canvas, timeout });
+    const { dataUrl, ...info } = capture;
+    await fs.writeFile(path, Buffer.from(dataUrl.split(',')[1], 'base64'));
+    // Keep the original return value unless metadata is explicitly requested.
+    return metadata ? { path, ...info } : path;
   }
 
-  /** Advance N animation frames then settle (for stepping deterministic-ish). */
+  /** Wait the specified milliseconds; does not guarantee frames or app readiness. */
   async settle(ms = 500) {
     await this.page.waitForTimeout(ms);
   }
 }
 
+function checkTimeout(timeout) {
+  if (!Number.isFinite(timeout) || timeout <= 0) throw new Error('timeout must be a positive finite number');
+}
+
 export const test = base.extend({
   xrDeviceName: ['metaQuest3', { option: true }],
-  xr: async ({ page, xrDeviceName }, use) => {
-    await page.addInitScript({ path: require.resolve('iwer/build/iwer.min.js') });
-    await page.addInitScript(
-      ([deviceName]) => {
-        const { XRDevice } = globalThis.IWER;
-        const config = globalThis.IWER[deviceName];
-        const device = new XRDevice(config);
-        // forceInstall: headless Chromium exposes a stub navigator.xr (always
-        // "not supported"); IWER >=2.3 silently refuses to clobber it otherwise.
-        device.installRuntime({ forceInstall: true });
-        // Event log for session lifecycle: short-lived sessions (an app may
-        // end one within seconds) can outrun state polling when the main
-        // thread is jammed (e.g. WASM boot). Record transitions instead.
-        globalThis.__xrSessionLog = [];
-        const log = (event, detail) =>
-          globalThis.__xrSessionLog.push({ event, detail: detail ?? null, t: performance.now() | 0 });
-        const sys = navigator.xr;
-        const origRequest = sys.requestSession.bind(sys);
-        sys.requestSession = (mode, init) => {
-          log('request', mode);
-          return origRequest(mode, init).then(
-            (session) => {
-              log('granted', mode);
-              // This listener is registered before the app ever sees the
-              // session, so at 'end' it runs ahead of app cleanup — the spec
-              // can define globalThis.__xrEndProbe to snapshot app state
-              // (e.g. an end-reason field) before the app consumes/resets it.
-              session.addEventListener(
-                'end',
-                () => {
-                  let detail = null;
-                  try {
-                    detail = globalThis.__xrEndProbe ? globalThis.__xrEndProbe() : null;
-                  } catch (e) {
-                    detail = 'probe threw: ' + e.message;
-                  }
-                  log('end', detail);
-                },
-                { once: true },
-              );
-              // Who ends the session? Record the call stack — degradation
-              // paths are impossible to tell apart from the 'end' event alone.
-              const origEnd = session.end.bind(session);
-              session.end = () => {
-                log('end-called', String(new Error().stack).split('\n').slice(1, 5).join(' <- '));
-                return origEnd();
-              };
-              return session;
-            },
-            (err) => {
-              log('rejected', String(err));
-              throw err;
-            },
-          );
-        };
-        device.stereoEnabled = false; // mono render → screenshots judgeable as one image
-        device.ipd = 0;
-        globalThis.__xrDevice = device;
-      },
-      [xrDeviceName],
-    );
+  xrStereoEnabled: [false, { option: true }],
+  // null selects 0 for mono, 0.064 m for stereo; explicit values are preserved.
+  xrIpd: [null, { option: true }],
+  xr: async ({ page, xrDeviceName, xrStereoEnabled, xrIpd }, use) => {
+    const ipd = xrIpd ?? (xrStereoEnabled ? 0.064 : 0);
+    if (typeof xrStereoEnabled !== 'boolean') throw new Error('xrStereoEnabled must be a boolean');
+    if (!Number.isFinite(ipd) || ipd < 0) throw new Error('xrIpd must be a non-negative finite number in meters');
+    const versions = {
+      playwrightWebxr: require('../package.json').version,
+      iwer: require('iwer/package.json').version,
+    };
+    const source = await fs.readFile(require.resolve('iwer/build/iwer.min.js'), 'utf8');
+    const options = { deviceName: xrDeviceName, stereoEnabled: xrStereoEnabled, ipd, versions };
+    // Playwright does not define ordering across separate addInitScript calls.
+    await page.addInitScript({ content: `${source}\n;(${installRuntime.toString()})(${JSON.stringify(options)});` });
     await use(new XRHandle(page));
   },
 });

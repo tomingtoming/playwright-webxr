@@ -1,0 +1,64 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>WebXR fixture regression world</title>
+<style>
+  #VRButton { position: fixed; z-index: 10; top: 8px; left: 8px; }
+  #cover { position: fixed; z-index: 20; inset: 0; }
+</style>
+<canvas id="unused" width="32" height="24"></canvas>
+<canvas id="world"></canvas>
+<script>
+  const params = new URLSearchParams(location.search);
+  const canvas = document.querySelector('#world');
+  canvas.width = innerWidth;
+  canvas.height = innerHeight;
+  const gl = canvas.getContext('webgl2', { xrCompatible: true, preserveDrawingBuffer: true });
+  window.framesRendered = 0;
+  window.session = null;
+  window.inputEvents = [];
+  async function enter() {
+    try {
+      const init = params.has('reject') ? { requiredFeatures: ['deliberately-unsupported-feature'] } : {};
+      const session = await navigator.xr.requestSession('immersive-vr', init);
+      window.session = session;
+      session.addEventListener('select', event => inputEvents.push(event.inputSource.handedness));
+      if (params.has('endImmediately')) return session.end();
+      if (params.has('noFrames')) return;
+      const space = await session.requestReferenceSpace('local');
+      session.updateRenderState({ baseLayer: new XRWebGLLayer(session, gl) });
+      const render = (_time, frame) => {
+        const layer = session.renderState.baseLayer;
+        gl.bindFramebuffer(gl.FRAMEBUFFER, layer.framebuffer);
+        gl.enable(gl.SCISSOR_TEST);
+        for (const view of frame.getViewerPose(space).views) {
+          const vp = layer.getViewport(view);
+          gl.viewport(vp.x, vp.y, vp.width, vp.height);
+          gl.scissor(vp.x, vp.y, vp.width, vp.height);
+          gl.clearColor(view.eye === 'right' ? 0 : 1, view.eye === 'right' ? 1 : 0, 0, 1);
+          gl.clear(gl.COLOR_BUFFER_BIT);
+        }
+        gl.disable(gl.SCISSOR_TEST);
+        framesRendered++;
+        session.requestAnimationFrame(render);
+      };
+      session.requestAnimationFrame(render);
+    } catch (error) {
+      window.requestError = String(error);
+    }
+  }
+  if (!params.has('missing')) {
+    setTimeout(() => {
+      const button = document.createElement('button');
+      button.id = 'VRButton';
+      button.textContent = 'ENTER VR';
+      button.onclick = params.has('noRequest') ? () => {} : enter;
+      if (params.has('hidden')) button.style.display = 'none';
+      document.body.append(button);
+    }, Number(params.get('delay') ?? 0));
+  }
+  if (params.has('covered')) {
+    const cover = document.createElement('div');
+    cover.id = 'cover';
+    document.body.append(cover);
+  }
+</script>
