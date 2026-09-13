@@ -14,7 +14,7 @@
 import { test as base, expect } from '@playwright/test';
 import { createRequire } from 'node:module';
 import fs from 'node:fs/promises';
-import { installRuntime, readDiagnostics } from './runtime.mjs';
+import { installRuntime, readDiagnostics, runSessionOperation } from './runtime.mjs';
 
 const require = createRequire(import.meta.url);
 
@@ -98,6 +98,23 @@ export class XRHandle {
       return session && !globalThis.__pwWebXR?.sessions.get(session)?.ended;
     }, undefined, { timeout });
     await handle.dispose();
+  }
+
+  /** End the current session and wait for both end() and its end event. */
+  async endSession({ sessionId, timeout = 10_000 } = {}) {
+    checkTimeout(timeout);
+    checkSessionId(sessionId);
+    return this.page.evaluate(runSessionOperation, { operation: 'endSession', sessionId, timeout });
+  }
+
+  /** Wait for new XR animation frames on the current session, not app readiness. */
+  async waitForFrames(count, { sessionId, timeout = 10_000 } = {}) {
+    if (!Number.isSafeInteger(count) || count < 0) {
+      throw new Error('waitForFrames: count must be a non-negative safe integer');
+    }
+    checkTimeout(timeout);
+    checkSessionId(sessionId);
+    return this.page.evaluate(runSessionOperation, { operation: 'waitForFrames', count, sessionId, timeout });
   }
 
   /** Lifecycle history for this document; sequence and IDs reset on navigation. */
@@ -265,6 +282,12 @@ export class XRHandle {
 
 function checkTimeout(timeout) {
   if (!Number.isFinite(timeout) || timeout <= 0) throw new Error('timeout must be a positive finite number');
+}
+
+function checkSessionId(sessionId) {
+  if (sessionId !== undefined && (typeof sessionId !== 'string' || !sessionId.trim())) {
+    throw new Error('sessionId must be a non-empty string');
+  }
 }
 
 export const test = base.extend({

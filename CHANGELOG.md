@@ -1,5 +1,14 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- `endSession({ sessionId, timeout })` ends the active session and confirms both the `end()` promise and its `end` event. Missing/ended sessions and mismatched IDs fail without targeting a later session.
+- `waitForFrames(count, { sessionId, timeout })` waits for successive XR animation frames on one session, with bounded waits and cancellation on exit. Application readiness assertions remain separate.
+- A packaged, dependency-free controller-aiming example at `playwright-webxr/examples/aim-controller`, with tracking/world coordinate guidance and coverage through actual XR target-ray poses for both hands.
+- Browser regressions for lifecycle races, failed/stalled exits, frame timeout cleanup and session isolation.
+
 ## 0.2.0 — 2026-09-12
 
 ### Changed

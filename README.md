@@ -72,6 +72,8 @@ extensions may differ from a hardware GPU.
 
 - `xr.enterVR({ button?, force?, timeout? })` — wait for a visible app entry button, click it and confirm a **new, live immersive-vr session**. `button` is a Playwright selector; defaults cover three.js `#VRButton` and common ENTER VR text. One timeout covers discovery, clicking and session entry (default 10,000 ms). Normal [Playwright actionability checks](https://playwright.dev/docs/actionability) apply; `force: true` is opt-in. Errors distinguish absent/hidden buttons, click failures, rejected requests and sessions that immediately ended.
 - `xr.waitForSession(timeout?)` — wait for any currently live session (default 10,000 ms).
+- `xr.endSession({ sessionId?, timeout? })` — call the current session's `end()` and wait for both its promise and its `end` event (default 10,000 ms). Returns `{ sessionId }`. A missing/ended session or mismatched ID is an error; a stale ID never ends a newer session.
+- `xr.waitForFrames(count, { sessionId?, timeout? })` — wait for `count` new XR animation frames on the current session (default timeout 10,000 ms). Returns `{ sessionId, frames }`. `count` must be a non-negative safe integer; zero checks the session and returns immediately. See the frame-wait example below.
 - `xr.sessionMode()` — current session's requested mode, or `null` before entry/after end. The fixture associates `requestSession(mode)` with its returned session; it does not rely on a nonstandard `XRSession.mode` property.
 - `xr.sessionLog()` / `xr.sessionCursor()` / `xr.waitForSessionEvent(event, options?)` — lifecycle history and scoped waits; see below.
 - `xr.setHeadPose({ position, euler, quaternion })` — headset position in meters and XYZ Euler angles in radians, or a quaternion.
@@ -124,6 +126,85 @@ an array of matching events. Supported events are `request`, `granted`,
 must not be reused across documents. To examine a session that immediately
 ends, click the app button yourself and wait on its events; `enterVR()`
 intentionally reports that it is no longer live.
+
+To end a session directly when the app has no exit control, use the fixture API:
+
+```js
+await xr.enterVR();
+const { sessionId } = await xr.waitForFrames(2);
+await xr.endSession({ sessionId, timeout: 5_000 });
+expect(await xr.sessionMode()).toBeNull();
+```
+
+Both operations bind to the active session **once, at the start of the page
+evaluation**. With `sessionId`, a mismatch fails before any exit or frame request.
+Without it, they select whichever session is active at that moment. They do not
+wait for a future session. Repeating `endSession()` after the session has ended
+is an error. Its timeout stops waiting; it cannot undo an already requested exit.
+Asynchronous app cleanup must be asserted separately. To test the app's exit UI
+itself, keep the click-and-event approach above.
+
+### Waiting for XR frames after a pose change
+
+```js
+const { sessionId } = await xr.waitForFrames(0); // capture the active session ID
+await xr.setHeadPose({ euler: [0, 0, Math.PI / 8] });
+await xr.waitForFrames(2, { sessionId, timeout: 5_000 });
+// Assert your app's loaded assets, hover state or simulation readiness here.
+await xr.screenshot('head-rolled.png');
+```
+
+This schedules successive `XRSession.requestAnimationFrame` callbacks. It counts
+only frames after the wait begins, on that same session; DOM animation frames
+and frames from a later session do not count. If the session ends or navigation
+replaces the document, the wait rejects. Stalled XR rendering (for example, a
+session without a configured layer) times out with the observed/requested count.
+Pending callbacks and listeners are removed on completion, timeout or exit.
+
+Frame progress does **not** guarantee that the app has rendered, loaded assets,
+finished physics, or presented pixels on a headset. Keep application-specific
+assertions. `settle(ms)` remains available for tests that intentionally need
+elapsed time.
+
+### Aiming a controller at a tracking-space point
+
+The dependency-free [aiming sample](examples/aim-controller.mjs) is included in
+the package and can also be copied into your tests:
+
+```js
+import { aimQuaternion } from 'playwright-webxr/examples/aim-controller';
+
+const position = [0.3, 1.3, -0.4]; // ray origin, in tracking-space meters
+const target = [0, 1.4, -2];       // target in the SAME tracking coordinates
+await xr.setControllerPose('right', {
+  position,
+  quaternion: aimQuaternion(position, target),
+});
+await xr.waitForFrames(2);
+// Assert your app's hover/hit-test result before pressing, if applicable.
+await xr.pressButton('right', 'trigger');
+```
+
+WebXR's [target ray](https://immersive-web.github.io/webxr/#dom-xrinputsource-targetrayspace)
+points along local **-Z**. IWER controller poses position/orient that target ray;
+the controller's grip can have a profile-specific offset. The sample returns an
+`[x, y, z, w]` quaternion with the shortest rotation from -Z, including the
+opposite (+Z) direction. It does not preserve wrist roll. Coincident points and
+non-finite coordinates are errors.
+
+For a scene-world target, first apply the inverse of your app's complete
+tracking-to-world transform, including the camera rig and any reference-space
+offset. For example, in Three.js, if `trackingToWorld` is that `Matrix4`:
+
+```js
+const targetTracking = targetWorld.clone()
+  .applyMatrix4(trackingToWorld.clone().invert()).toArray();
+const quaternion = aimQuaternion(position, targetTracking);
+```
+
+Do not pass a world-space or viewer-relative point directly. In IWER, `local`
+space is based on the headset transform when the reference space is requested;
+it need not equal the tracking coordinates used by `setControllerPose()`.
 
 ### Mono and stereo capture dimensions
 
