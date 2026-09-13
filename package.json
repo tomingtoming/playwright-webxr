@@ -18,7 +18,8 @@
   "license": "MIT",
   "type": "module",
   "files": [
-    "src"
+    "src",
+    "examples"
   ],
   "dependencies": {
     "iwer": "^2.3.0"
@@ -31,7 +32,8 @@
     "webxr-layers-polyfill": "^1.1.0"
   },
   "exports": {
-    ".": "./src/index.mjs"
+    ".": "./src/index.mjs",
+    "./examples/aim-controller": "./examples/aim-controller.mjs"
   },
   "repository": "github:tomingtoming/playwright-webxr"
 }

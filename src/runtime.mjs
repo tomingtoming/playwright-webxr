@@ -72,6 +72,78 @@ export function installRuntime({ deviceName, stereoEnabled, ipd, versions }) {
   };
 }
 
+// Runs in one page evaluation: select once before any asynchronous work so an
+// exit/re-entry cannot redirect the operation to a different session.
+export function runSessionOperation({ operation, sessionId, timeout, count }) {
+  const device = globalThis.__xrDevice;
+  const session = device?.activeSession;
+  const record = session && globalThis.__pwWebXR?.sessions.get(session);
+  if (!record || record.ended) {
+    throw new Error(`${operation}: no active session${sessionId === undefined ? '' : ` (requested ${sessionId})`}`);
+  }
+  if (sessionId !== undefined && sessionId !== record.sessionId) {
+    throw new Error(`${operation}: sessionId mismatch (requested ${sessionId}, active ${record.sessionId})`);
+  }
+  const id = record.sessionId;
+  return new Promise((resolve, reject) => {
+    let done = false;
+    let frameId;
+    let frames = 0;
+    let endResolved = false;
+    let endObserved = false;
+    const finish = (error) => {
+      if (done) return;
+      done = true;
+      clearTimeout(timer);
+      session.removeEventListener('end', onEnd);
+      if (frameId !== undefined) session.cancelAnimationFrame(frameId);
+      if (error) reject(new Error(`${operation}: ${id}: ${error}`));
+      else resolve(operation === 'waitForFrames' ? { sessionId: id, frames } : { sessionId: id });
+    };
+    const onEnd = () => {
+      if (operation === 'waitForFrames') {
+        finish(`session ended after ${frames}/${count} XR frames`);
+      } else {
+        endObserved = true;
+        if (endResolved) finish();
+      }
+    };
+    const timer = setTimeout(() => finish(operation === 'waitForFrames'
+      ? `timed out after ${timeout}ms waiting for XR frames (${frames}/${count})`
+      : `timed out after ${timeout}ms waiting for end() and the end event`), timeout);
+    session.addEventListener('end', onEnd, { once: true });
+
+    if (operation === 'endSession') {
+      // Install the listener first: IWER may dispatch end synchronously.
+      // A fulfilled end() alone must not be mistaken for an observed end event.
+      Promise.resolve().then(() => session.end()).then(() => {
+        endResolved = true;
+        if (endObserved) finish();
+      }, error => finish(`end() failed: ${error?.message ?? String(error)}`));
+      return;
+    }
+
+    if (count === 0) return finish();
+    const requestFrame = () => {
+      try {
+        frameId = session.requestAnimationFrame(() => {
+          frameId = undefined;
+          if (done) return;
+          if (record.ended || device.activeSession !== session) {
+            return finish(`session ended or changed after ${frames}/${count} XR frames`);
+          }
+          frames++;
+          if (frames === count) finish();
+          else requestFrame();
+        });
+      } catch (error) {
+        finish(`requestAnimationFrame() failed: ${error?.message ?? String(error)}`);
+      }
+    };
+    requestFrame();
+  });
+}
+
 // Runs in the page. Values come from the active render state and an XR frame,
 // never from feature requests or from the mere presence of XRWebGLBinding.
 export async function readDiagnostics({ canvas: selector, timeout }) {
