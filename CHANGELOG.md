@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.3.0 — 2026-09-13
 
 ### Added
 
@@ -8,6 +8,14 @@
 - `waitForFrames(count, { sessionId, timeout })` waits for successive XR animation frames on one session, with bounded waits and cancellation on exit. Application readiness assertions remain separate.
 - A packaged, dependency-free controller-aiming example at `playwright-webxr/examples/aim-controller`, with tracking/world coordinate guidance and coverage through actual XR target-ray poses for both hands.
 - Browser regressions for lifecycle races, failed/stalled exits, frame timeout cleanup and session isolation.
+
+### Upgrade
+
+```sh
+npm install -D playwright-webxr@^0.3.0
+```
+
+Existing `^0.2.0` dependency ranges do not select this release. Existing APIs remain available. `endSession()` confirms XR session termination, not asynchronous application cleanup; `waitForFrames()` confirms XR frame progress, not application readiness.
 
 ## 0.2.0 — 2026-09-12
 
