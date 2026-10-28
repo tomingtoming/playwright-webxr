@@ -1,5 +1,23 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- `hold(hand, button)` / `release(hand, button)` keep a button down across other calls.
+- `drag(hand, { from, to, ms, steps, button, quaternion, toQuaternion, space, release })` hovers, grabs, moves along a path through intermediate XR frames and releases in one call.
+- `setGripPose(hand, { position, quaternion })` and `controllerPose(hand)` place and read the profile grip instead of the target ray; `drag(..., { space: 'grip' })` moves the grip.
+- `holdAxes(hand, x, y, { ms, frames })` and `flick(hand, direction)` for thumbstick timing.
+- `disconnect(hand)` / `reconnect(hand)` for controller sleep and tracking loss.
+- `haptics(hand)` returns haptic pulses requested by the app.
+- `projectPoint(point, { eye })` returns NDC, frustum membership, canvas pixel, angle from the view centre and pixels per degree.
+
+### Changed
+
+- `pressButton()` now holds for at least `holdMs` **and** `frames` XR frames (default 2) and confirms the release in a later frame. Previously a press and release could both land between two frames on a slow page, and IWER then applied only the release. It now requires an active session (a press without one never reached the app).
+- Controller input helpers reject unknown hands, button IDs and axes instead of silently doing nothing.
+- When the runtime is missing because `xr` was first requested after navigation, helpers explain that and how to fix it.
+
 ## 0.3.0 — 2026-09-13
 
 ### Added

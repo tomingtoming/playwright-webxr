@@ -77,8 +77,16 @@ extensions may differ from a hardware GPU.
 - `xr.sessionMode()` — current session's requested mode, or `null` before entry/after end. The fixture associates `requestSession(mode)` with its returned session; it does not rely on a nonstandard `XRSession.mode` property.
 - `xr.sessionLog()` / `xr.sessionCursor()` / `xr.waitForSessionEvent(event, options?)` — lifecycle history and scoped waits; see below.
 - `xr.setHeadPose({ position, euler, quaternion })` — headset position in meters and XYZ Euler angles in radians, or a quaternion.
-- `xr.setControllerPose(hand, { position, quaternion })`
-- `xr.pressButton(hand, id, { holdMs? })` / `xr.setAxes(hand, x, y)` — controller input (`trigger`, `squeeze`, `a-button`, … / thumbstick). Default button hold is 120 ms.
+- `xr.setControllerPose(hand, { position, quaternion })` — place the controller's **target ray**.
+- `xr.setGripPose(hand, { position, quaternion? })` / `xr.controllerPose(hand)` — place or read the **grip** (the point a hand holds); see below.
+- `xr.pressButton(hand, id, { holdMs?, frames? })` — press and release. The press lasts at least `holdMs` (default 120 ms) **and** `frames` XR frames (default 2); the release is confirmed in a further frame.
+- `xr.hold(hand, id, { value?, frames? })` / `xr.release(hand, id)` — keep a button down across other calls (grab, move, let go).
+- `xr.drag(hand, { from, to, ms?, steps?, button?, quaternion?, toQuaternion?, space?, release? })` — hover, grab (`squeeze` by default), move along a straight path and release in one call.
+- `xr.setAxes(hand, x, y)` — set the thumbstick immediately; it stays until changed.
+- `xr.holdAxes(hand, x, y, { ms?, frames? })` / `xr.flick(hand, 'left' | 'right' | 'up' | 'down', { magnitude?, frames? })` — tilt, then centre.
+- `xr.disconnect(hand)` / `xr.reconnect(hand)` — controller sleep or tracking loss; resolves after the session's input sources changed.
+- `xr.haptics(hand?)` — haptic pulses the app requested: `[{ hand, actuator, value, duration, t }]`.
+- `xr.projectPoint(point, { eye? })` — where a tracking-space point lands in the view; see below.
 - `xr.diagnostics({ canvas?, timeout? })` — runtime, current session, render state, input sources, selected canvas and GPU; see below.
 - `xr.screenshot(path, { canvas?, timeout?, metadata? })` — PNG canvas capture; see below.
 - `xr.runtimeInstalled()` — whether the emulated device is installed.
@@ -206,6 +214,104 @@ Do not pass a world-space or viewer-relative point directly. In IWER, `local`
 space is based on the headset transform when the reference space is requested;
 it need not equal the tracking coordinates used by `setControllerPose()`.
 
+### Controller input on slow pages
+
+IWER applies a button value at the start of the **next XR frame**, and only the
+last value written before that frame counts. A press and release written
+between two frames — easily the case on a loaded machine, where one frame can
+take longer than a fixed hold — reach the app as no press at all.
+
+All controller input helpers therefore run as one page evaluation driven by XR
+animation frames: values are written, then the helper waits until IWER has
+applied them in the requested number of frames. Neither a slow page nor a slow
+test process can drop or merge steps. An active session is required; unknown
+hands, button IDs and axes are errors (IWER itself only logs a warning).
+
+```js
+// Press: at least 2 XR frames down, then released in a later frame.
+await xr.pressButton('right', 'trigger');
+
+// Grab, move, let go — the app sees intermediate poses, never a teleport.
+await xr.drag('right', { from: [0.2, 1.3, -0.4], to: [0.4, 1.3, -0.4], ms: 300 });
+
+// Or step by step when something else must happen while held.
+await xr.hold('left', 'squeeze');
+await xr.setControllerPose('left', { position: [-0.1, 1.4, -0.5] });
+await xr.waitForFrames(2);
+await xr.release('left', 'squeeze');
+
+// "One tilt, one action" and repeat-rate behaviour.
+await xr.flick('right', 'right');                 // x = 1 for 2 frames, then centre
+await xr.holdAxes('right', 0, -1, { ms: 600 });   // up for at least 600 ms
+```
+
+`drag()` sets the start pose and waits a frame (hover), presses, interpolates
+over at least `ms` **and** at least `steps` frames (default 5), holds the end
+pose for a frame and releases (`release: false` keeps the button down). With
+`quaternion`/`toQuaternion` it also rotates. Durations are minimums: on a
+slow page the same path takes more wall time, not fewer frames.
+
+Read back app state in **one** `page.evaluate()` per snapshot. Several
+evaluations in a row can straddle XR frames and mix values from different
+frames.
+
+### Grip and target ray
+
+`setControllerPose()` places the **target ray** (WebXR `targetRaySpace`). The
+grip (`gripSpace`) is a child of it, offset by the device profile. For IWER's
+Meta Quest profiles the grip sits about 5 cm from the target ray origin
+(about (±0.4, −1.6, +5.0) cm in the ray's own axes) and is pitched about 45°
+with about 7° of yaw, so it **rotates with the hand**: the grip's −X is not
+the world's −X once the hand turns. Apps that grab or sculpt at the grip
+otherwise need a per-test calibration.
+
+```js
+// Put the grip itself on a vertex; the current hand orientation is kept.
+await xr.setGripPose('right', { position: [0.1, 1.2, -0.3] });
+// Or give the grip an orientation as well.
+await xr.setGripPose('right', { position: [0.1, 1.2, -0.3], quaternion: [0, 0, 0, 1] });
+// Drag in grip coordinates.
+await xr.drag('right', { from: [0.1, 1.2, -0.3], to: [0.1, 1.4, -0.3], space: 'grip' });
+const { targetRay, grip, connected } = await xr.controllerPose('right');
+```
+
+All positions are in IWER tracking coordinates, the same as `setControllerPose()`.
+
+### Disconnects and haptics
+
+```js
+await xr.disconnect('right');   // session.inputSources no longer has it
+// assert that the app did not commit a half-finished edit, etc.
+await xr.reconnect('right');
+
+await xr.pressButton('right', 'trigger');   // an app that pulses on press
+expect(await xr.haptics('right')).toHaveLength(1);
+```
+
+`haptics()` records `pulse()` calls on every actuator, including those reached
+through `gamepad.vibrationActuator`. It records requests; nothing vibrates.
+
+### How big things look
+
+The emulator renders a 90° vertical field of view into your viewport: at
+960 × 540 that is about 4.7 px per degree at the centre, while a Quest 3 shows
+roughly 25 px per degree. Judge legibility in **degrees**, not emulator pixels:
+
+```js
+const label = await xr.projectPoint([0, 1.5, -1]);
+// { eye, ndc: [x, y, z], inView, behind, pixel: [x, y] | null,
+//   degreesFromCenter, pixelsPerDegree, viewport }
+expect(label.inView).toBe(true);
+expect(label.degreesFromCenter).toBeLessThan(25);
+// Text height in degrees: project its top and bottom and compare the angles,
+// or divide its pixel height by pixelsPerDegree.
+```
+
+The point is in tracking coordinates. Projection uses one XR frame's viewer
+pose and projection matrix; `pixel` is in canvas pixels with a top-left origin
+and is `null` without a base-layer viewport (for example, with projection
+layers). `eye` defaults to the first eye with a non-empty viewport.
+
 ### Mono and stereo capture dimensions
 
 The fixture does not resize the app's canvas. Keep the intended **per-eye**
@@ -318,6 +424,7 @@ IWER 2.3.0 and 2.4.0. Optional app integration tests require `CAELUM_URL` or
 
 ## Gotchas learned the hard way
 
+- **Request `xr` before the first `page.goto()`.** Fixtures are lazy: the runtime is installed with `page.addInitScript()` when `xr` is first requested, which only affects documents loaded afterwards. A `beforeEach(({ page }) => page.goto(...))` that does not take `xr` loads the page without the runtime. Write `test.beforeEach(async ({ page, xr }) => ...)`. Helpers now say so when the runtime is missing.
 - **`forceInstall` is mandatory in headless Chromium**: it exposes a stub `navigator.xr` that always answers "not supported", and IWER ≥2.3 politely refuses to clobber anything that looks like a native runtime. The fixture passes `{ forceInstall: true }` for you.
 - **`--use-angle=vulkan` unlocks a real GPU *and* OVR_multiview2 in headless Chromium** (verified on AMD Radeon 780M via RADV; even SwiftShader's Vulkan backend exposes multiview, unlike its GL backend). Apps whose VR path gates on multiview (single-pass stereo) only work with this backend.
 - **IWER 2.3.0 `polyfillLayers` ordering bug**: `installRuntime` instantiates `WebXRLayerPolyfill` *and then* overwrites the global `XRWebGLBinding` with its own class — so `binding.createProjectionLayer` is missing and layers-dependent apps fall back or die. Workaround: `installRuntime({ forceInstall: true })` **without** `polyfillLayers`, then re-apply `new WebXRLayersPolyfill()` (from `webxr-layers-polyfill`) *after* install. Also add `'layers'` to the device profile's `supportedFeatures` so sessions grant the optional feature. (Both worth upstream issues.)
