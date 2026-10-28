@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.5.0 — 2026-10-28
 
 ### Added
 
@@ -17,6 +17,14 @@
 
 - With `space: 'grip'`, `drag()` quaternions are grip orientations; when omitted, the target ray's orientation is kept.
 - Installing from a local checkout: `file:` links load `@playwright/test` twice; install a packed tarball.
+
+### Upgrade
+
+```sh
+npm install -D playwright-webxr@^0.5.0
+```
+
+Existing `^0.4.x` ranges do not select this release. The only behaviour change is that `drag()` releases one frame later; pass `settleFrames: 1` for the 0.4 timing.
 
 ## 0.4.1 — 2026-10-28
 
