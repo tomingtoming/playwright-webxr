@@ -23,7 +23,7 @@ export function installRuntime({ deviceName, stereoEnabled, ipd, versions }) {
     for (const [index, actuator] of (device.controllers?.[hand]?.inputSource.gamepad.hapticActuators ?? []).entries()) {
       const pulse = actuator.pulse.bind(actuator);
       actuator.pulse = (value, duration) => {
-        state.haptics.push({ hand, actuator: index, value, duration, t: Math.floor(performance.now()) });
+        state.haptics.push({ sequence: state.haptics.length + 1, hand, actuator: index, value, duration, t: Math.floor(performance.now()) });
         return pulse(value, duration);
       };
     }

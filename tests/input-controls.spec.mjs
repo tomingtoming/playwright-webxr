@@ -216,3 +216,81 @@ test('projectPoint maps view-relative points to NDC, pixels and degrees', async 
   expect(turned.degreesFromCenter).toBeCloseTo(30, 4);
   expect(turned.ndc[0]).toBeGreaterThan(0);
 });
+
+// An app that moves a held object to the hand pose of the PREVIOUS frame.
+async function laggedFollower(page) {
+  await page.evaluate(async () => {
+    const session = window.session;
+    const space = await session.requestReferenceSpace('local');
+    window.follow = { x: null, grabbedAt: null };
+    let held = false;
+    let previous = null;
+    const tick = (_t, frame) => {
+      const source = Array.from(session.inputSources).find(s => s.handedness === 'left');
+      const x = source && frame.getPose(source.gripSpace, space).transform.position.x;
+      const squeezed = source?.gamepad.buttons[1].value === 1;
+      if (squeezed && !held) { follow.grabbedAt = x; follow.x = x; }
+      else if (squeezed && previous !== null) follow.x = previous;
+      held = squeezed;
+      previous = x;
+      session.requestAnimationFrame(tick);
+    };
+    session.requestAnimationFrame(tick);
+  });
+}
+
+test('drag holds the end pose long enough for an app that follows one frame late', async ({ page, xr }) => {
+  await laggedFollower(page);
+  const path = { from: [-0.3, 1.2, -0.3], to: [0, 1.2, -0.3], ms: 0, steps: 5, space: 'grip' };
+  // Control: releasing one frame after the end pose loses the last segment.
+  await xr.drag('left', { ...path, settleFrames: 1 });
+  let moved = await page.evaluate(() => follow.x - follow.grabbedAt);
+  expect(moved).toBeLessThan(0.299);
+  await xr.drag('left', path);
+  moved = await page.evaluate(() => follow.x - follow.grabbedAt);
+  expect(moved).toBeCloseTo(0.3, 5);
+});
+
+test('holdAxes with release: false leaves the stick tilted', async ({ page, xr }) => {
+  await record(page);
+  await xr.holdAxes('right', 0.7, 0, { release: false });
+  await xr.waitForFrames(2);
+  expect((await frames(page)).at(-1).hands.right.axes).toEqual([expect.closeTo(0.7, 6), 0]);
+  await xr.holdAxes('right', 0, 0, { frames: 1, release: false });
+  expect((await frames(page)).at(-1).hands.right.axes).toEqual([0, 0]);
+});
+
+test('haptics cursor separates pulses before and after an action', async ({ page, xr }) => {
+  const pulse = () => page.evaluate(() => Array.from(window.session.inputSources)
+    .find(s => s.handedness === 'right').gamepad.hapticActuators[0].pulse(0.2, 20));
+  await pulse();
+  const cursor = await xr.hapticsCursor();
+  expect(cursor).toBe(1);
+  await pulse();
+  await pulse();
+  const newer = await xr.haptics('right', { after: cursor });
+  expect(newer.map(e => e.sequence)).toEqual([2, 3]);
+  expect((await xr.haptics({ after: 2 })).map(e => e.sequence)).toEqual([3]);
+  await expect(xr.haptics({ after: -1 })).rejects.toThrow(/cursor/);
+});
+
+test('sequence runs a timed two-hand script alongside in-page recording', async ({ page, xr }) => {
+  await record(page);
+  await xr.sequence([
+    { button: ['left', 'squeeze', 1] }, { frames: 2 },
+    { button: ['left', 'squeeze', 0] }, { frames: 1 },
+    { wait: 60 },
+    { axes: ['right', 0, -1] }, { frames: 2 },
+    { axes: ['right', 0, 0] }, { frames: 1 },
+  ]);
+  const all = await frames(page);
+  const released = (await events(page)).find(e => e.type === 'squeezeend').frame;
+  const tilted = all.findIndex(f => f.hands.right.axes[1] === -1);
+  expect(tilted).toBeGreaterThan(released);
+  expect(all[tilted].t - all[released].t).toBeGreaterThanOrEqual(55);
+  expect(all.at(-1).hands.right.axes).toEqual([0, 0]);
+
+  await expect(xr.sequence([{ button: ['left', 'squeeze', 1], frames: 1 }])).rejects.toThrow(/exactly one/);
+  await expect(xr.sequence([{ button: ['left', 'grip', 1] }])).rejects.toThrow(/no button 'grip'/);
+  await expect(xr.sequence([])).rejects.toThrow(/non-empty/);
+});

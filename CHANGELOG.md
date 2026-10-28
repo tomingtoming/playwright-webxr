@@ -1,5 +1,31 @@
 # Changelog
 
+## 0.5.0 — 2026-10-28
+
+### Added
+
+- `sequence(steps)` runs a timed input script across both hands (`button`, `axes`, `pose`, `connected`, `frames`, `wait` steps) in one frame-driven evaluation, alongside the app's own in-page recording.
+- `hapticsCursor()` and `haptics(hand, { after })`; haptic entries carry a `sequence`.
+- `holdAxes(..., { release: false })` leaves the stick tilted after a frame-synchronised hold.
+- `drag(..., { settleFrames })`.
+
+### Changed
+
+- `drag()` holds the end pose for 2 XR frames by default (`settleFrames`) before releasing. With one frame, an app that follows the hand a frame late lost the last segment (0.290 m of a 0.3 m carry).
+
+### Documentation
+
+- With `space: 'grip'`, `drag()` quaternions are grip orientations; when omitted, the target ray's orientation is kept.
+- Installing from a local checkout: `file:` links load `@playwright/test` twice; install a packed tarball.
+
+### Upgrade
+
+```sh
+npm install -D playwright-webxr@^0.5.0
+```
+
+Existing `^0.4.x` ranges do not select this release. The only behaviour change is that `drag()` releases one frame later; pass `settleFrames: 1` for the 0.4 timing.
+
 ## 0.4.1 — 2026-10-28
 
 ### Fixed

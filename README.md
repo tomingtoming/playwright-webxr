@@ -81,11 +81,12 @@ extensions may differ from a hardware GPU.
 - `xr.setGripPose(hand, { position, quaternion? })` / `xr.controllerPose(hand)` — place or read the **grip** (the point a hand holds); see below.
 - `xr.pressButton(hand, id, { holdMs?, frames? })` — press and release. The press lasts at least `holdMs` (default 120 ms) **and** `frames` XR frames (default 2); the release is confirmed in a further frame.
 - `xr.hold(hand, id, { value?, frames? })` / `xr.release(hand, id)` — keep a button down across other calls (grab, move, let go).
-- `xr.drag(hand, { from, to, ms?, steps?, button?, quaternion?, toQuaternion?, space?, release? })` — hover, grab (`squeeze` by default), move along a straight path and release in one call.
+- `xr.drag(hand, { from, to, ms?, steps?, button?, quaternion?, toQuaternion?, space?, release?, settleFrames? })` — hover, grab (`squeeze` by default), move along a straight path, hold the end pose and release in one call.
 - `xr.setAxes(hand, x, y)` — set the thumbstick immediately; it stays until changed.
-- `xr.holdAxes(hand, x, y, { ms?, frames? })` / `xr.flick(hand, 'left' | 'right' | 'up' | 'down', { magnitude?, frames? })` — tilt, then centre.
+- `xr.holdAxes(hand, x, y, { ms?, frames?, release? })` / `xr.flick(hand, 'left' | 'right' | 'up' | 'down', { magnitude?, frames? })` — tilt, then centre (`release: false` leaves it tilted, frame-synchronised).
+- `xr.sequence(steps, { sessionId?, timeout? })` — a timed input script across both hands; see below.
 - `xr.disconnect(hand)` / `xr.reconnect(hand)` — controller sleep or tracking loss; resolves after the session's input sources changed.
-- `xr.haptics(hand?)` — haptic pulses the app requested: `[{ hand, actuator, value, duration, t }]`.
+- `xr.haptics(hand?, { after? })` / `xr.hapticsCursor()` — haptic pulses the app requested: `[{ sequence, hand, actuator, value, duration, t }]`.
 - `xr.projectPoint(point, { eye? })` — where a tracking-space point lands in the view; see below.
 - `xr.diagnostics({ canvas?, timeout? })` — runtime, current session, render state, input sources, selected canvas and GPU; see below.
 - `xr.screenshot(path, { canvas?, timeout?, metadata? })` — PNG canvas capture; see below.
@@ -247,9 +248,33 @@ await xr.holdAxes('right', 0, -1, { ms: 600 });   // up for at least 600 ms
 
 `drag()` sets the start pose and waits a frame (hover), presses, interpolates
 over at least `ms` **and** at least `steps` frames (default 5), holds the end
-pose for a frame and releases (`release: false` keeps the button down). With
+pose for `settleFrames` frames (default 2, so apps that follow the hand a frame
+late still arrive) and releases (`release: false` keeps the button down). With
 `quaternion`/`toQuaternion` it also rotates. Durations are minimums: on a
 slow page the same path takes more wall time, not fewer frames.
+
+For input that spans both hands or needs timing between steps, write the
+script once; it runs in the same frame-driven evaluation:
+
+```js
+// Let go with the left hand, then tilt the right stick about 50 ms later.
+const recording = page.evaluate(() => window.myApp.recordFrames(30)); // optional, runs concurrently
+await xr.sequence([
+  { button: ['left', 'squeeze', 0] }, { frames: 1 },
+  { wait: 50 },
+  { axes: ['right', 0, -1] }, { frames: 2 },
+  { axes: ['right', 0, 0] }, { frames: 1 },
+]);
+const frames = await recording;
+```
+
+Steps are `{ button: [hand, id, value] }`, `{ axes: [hand, x, y], id? }`
+(`id` defaults to `'thumbstick'`), `{ pose: hand, position?, quaternion? }`,
+`{ connected: [hand, boolean] }`, `{ frames: n, ms? }` and `{ wait: ms }`.
+Value steps are written immediately and take effect at the start of the next
+XR frame, so follow a value the app must see with a `frames` or `wait` step.
+Waits are checked once per XR frame: timing resolution is one frame, which is
+also the finest resolution at which the app can observe input.
 
 Read back app state in **one** `page.evaluate()` per snapshot. Several
 evaluations in a row can straddle XR frames and mix values from different
@@ -272,10 +297,16 @@ await xr.setGripPose('right', { position: [0.1, 1.2, -0.3] });
 await xr.setGripPose('right', { position: [0.1, 1.2, -0.3], quaternion: [0, 0, 0, 1] });
 // Drag in grip coordinates.
 await xr.drag('right', { from: [0.1, 1.2, -0.3], to: [0.1, 1.4, -0.3], space: 'grip' });
+// With space: 'grip', quaternion/toQuaternion are GRIP orientations.
+await xr.drag('right', { from, to, space: 'grip', quaternion: gripQuaternion });
 const { targetRay, grip, connected } = await xr.controllerPose('right');
 ```
 
 All positions are in IWER tracking coordinates, the same as `setControllerPose()`.
+Orientation follows the same rule as positions: with `space: 'grip'` (and in
+`setGripPose()`), a quaternion is the grip's orientation. When it is omitted,
+the **target ray's** current orientation is kept, so the grip keeps its
+profile tilt relative to it.
 
 ### Disconnects and haptics
 
@@ -290,6 +321,15 @@ expect(await xr.haptics('right')).toHaveLength(1);
 
 `haptics()` records `pulse()` calls on every actuator, including those reached
 through `gamepad.vibrationActuator`. It records requests; nothing vibrates.
+To look only at pulses caused by one action, save a cursor first:
+
+```js
+const before = await xr.hapticsCursor();
+await xr.pressButton('right', 'trigger');
+await expect.poll(async () => (await xr.haptics('right', { after: before })).length).toBe(2);
+```
+
+Apps often schedule a second pulse with a timer; poll instead of reading once.
 
 ### How big things look
 
@@ -406,6 +446,22 @@ reach that canvas**. Saving a PNG does not verify layer textures or the final
 headset image. Keep app-specific texture/FBO evidence alongside it when needed.
 Eye cropping is not provided; use actual diagnosed viewports, not an assumed
 half-image split.
+
+## Installing from a local checkout
+
+`file:` dependencies and `npm link` symlink this package. Node then resolves
+`@playwright/test` from the symlink's **real path**, finds the copy in this
+repository's own `node_modules`, and Playwright fails because it was loaded
+twice. Install a packed tarball instead:
+
+```sh
+(cd ../playwright-webxr && npm pack)              # writes playwright-webxr-<version>.tgz
+npm i -D ../playwright-webxr/playwright-webxr-<version>.tgz   # or: bun add -d <same path>
+```
+
+The symptom is `Playwright Test did not expect test() to be called here` (or a
+similar duplicate-load error). `NODE_OPTIONS=--preserve-symlinks` does not
+avoid it. Repack after each change to the checkout.
 
 ## Development and regression tests
 
