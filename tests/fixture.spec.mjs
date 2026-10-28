@@ -263,3 +263,12 @@ test('screenshot has a timeout when window animation frames stop', async ({ page
   await page.evaluate(() => { window.requestAnimationFrame = () => 0; });
   await expect(xr.screenshot(testInfo.outputPath('stalled.png'), { timeout: 100 })).rejects.toThrow(/timed out waiting for a frame/);
 });
+
+test('package.json is exported for version checks', async () => {
+  const { createRequire } = await import('node:module');
+  const require = createRequire(import.meta.url);
+  const pkg = require('playwright-webxr/package.json');
+  expect(pkg.name).toBe('playwright-webxr');
+  const json = await import('playwright-webxr/package.json', { with: { type: 'json' } });
+  expect(json.default.version).toBe(pkg.version);
+});
