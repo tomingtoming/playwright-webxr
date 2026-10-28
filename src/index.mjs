@@ -329,13 +329,14 @@ export class XRHandle {
    */
   async drag(hand, {
     from, to, ms = 300, steps = 5, button = 'squeeze', quaternion, toQuaternion,
-    space = 'targetRay', release = true, sessionId, timeout,
+    space = 'targetRay', release = true, settleFrames = 2, sessionId, timeout,
   } = {}) {
     checkHand(hand);
     checkVector(from, 'from');
     checkVector(to, 'to');
     checkMs(ms, 'ms');
     checkFrames(steps, 'drag', 1);
+    checkFrames(settleFrames, 'drag', 1);
     if (!['targetRay', 'grip'].includes(space)) throw new Error("drag: space must be 'targetRay' or 'grip'");
     if (toQuaternion && !quaternion) throw new Error('drag: toQuaternion requires quaternion');
     let start = { position: from, quaternion };
@@ -353,7 +354,8 @@ export class XRHandle {
         type: 'move', hand, from: start.position, to: end.position, ms, steps,
         fromQuaternion: start.quaternion ?? null, toQuaternion: end.quaternion ?? null,
       },
-      { type: 'frames', count: 1 },
+      // Hold the end pose so apps that follow the hand a frame late still arrive.
+      { type: 'frames', count: settleFrames },
     ];
     if (release) steps_.push({ type: 'button', hand, button, value: 0 }, { type: 'frames', count: 1 });
     return this.input('drag', steps_, { sessionId, timeout: timeout ?? Math.max(10_000, ms * 4) });
@@ -376,18 +378,18 @@ export class XRHandle {
    * Hold the thumbstick at (x, y) for at least ms and `frames` XR frames, then
    * return it to centre and wait one frame. Use for repeat-rate behaviour.
    */
-  async holdAxes(hand, x, y, { ms = 0, frames = 2, axes = 'thumbstick', sessionId, timeout } = {}) {
+  async holdAxes(hand, x, y, { ms = 0, frames = 2, axes = 'thumbstick', release = true, sessionId, timeout } = {}) {
     checkHand(hand);
     checkAxis(x);
     checkAxis(y);
     checkMs(ms, 'ms');
     checkFrames(frames, 'holdAxes', 1);
-    return this.input('holdAxes', [
+    const steps = [
       { type: 'axes', hand, axes, x, y },
       { type: 'frames', count: frames, minMs: ms },
-      { type: 'axes', hand, axes, x: 0, y: 0 },
-      { type: 'frames', count: 1 },
-    ], { sessionId, timeout: timeout ?? Math.max(10_000, ms * 4) });
+    ];
+    if (release) steps.push({ type: 'axes', hand, axes, x: 0, y: 0 }, { type: 'frames', count: 1 });
+    return this.input('holdAxes', steps, { sessionId, timeout: timeout ?? Math.max(10_000, ms * 4) });
   }
 
   /**
@@ -423,15 +425,29 @@ export class XRHandle {
 
   /**
    * Haptic pulses the app requested in this document, oldest first:
-   * [{ hand, actuator, value, duration, t }]. Optionally filter by hand.
+   * [{ sequence, hand, actuator, value, duration, t }]. Filter by hand and/or
+   * by { after: cursor } (exclusive), with the cursor from hapticsCursor().
    */
-  async haptics(hand) {
+  async haptics(hand, options = {}) {
+    // haptics({ after }) is the hand-less form.
+    if (typeof hand === 'object' && hand !== null) [hand, options] = [undefined, hand];
+    const { after = 0 } = options;
     if (hand !== undefined) checkHand(hand);
-    return this.evaluate(hand => {
+    if (!Number.isSafeInteger(after) || after < 0) throw new Error('haptics: after must be a non-negative integer cursor');
+    return this.evaluate(({ hand, after }) => {
       const state = globalThis.__pwWebXR;
       if (!state) throw new Error('IWER device missing');
-      return state.haptics.filter(entry => hand === undefined || entry.hand === hand);
-    }, hand);
+      return state.haptics.filter(entry => entry.sequence > after && (hand === undefined || entry.hand === hand));
+    }, { hand, after });
+  }
+
+  /** Save before an action; pass to haptics({ after }) to see only newer pulses. */
+  async hapticsCursor() {
+    return this.evaluate(() => {
+      const state = globalThis.__pwWebXR;
+      if (!state) throw new Error('IWER device missing');
+      return state.haptics.length;
+    });
   }
 
   /**
@@ -461,6 +477,22 @@ export class XRHandle {
     const degreesFromCenter = Math.acos(Math.max(-1, Math.min(1, -local[2] / Math.hypot(...local)))) * 180 / Math.PI;
     const pixelsPerDegree = vp && vp.height > 0 ? vp.height / 2 * view.projectionMatrix[5] * Math.PI / 180 : null;
     return { eye: view.eye, ndc, inView, behind: cw <= 0, pixel, degreesFromCenter, pixelsPerDegree, viewport: vp };
+  }
+
+  /**
+   * Run a timed input script in one frame-driven page evaluation. Steps:
+   *   { button: [hand, id, value] }          write a button value
+   *   { axes: [hand, x, y], id? }             write a thumbstick (or other axes)
+   *   { pose: hand, position?, quaternion? }  place a target ray
+   *   { connected: [hand, boolean] }          connect / disconnect
+   *   { frames: n, ms? }                      wait n XR frames and at least ms
+   *   { wait: ms }                            wait at least ms (checked each XR frame)
+   * Values take effect at the start of the next XR frame; add a frames/wait
+   * step after a value you need the app to observe.
+   */
+  async sequence(steps, { sessionId, timeout = 10_000 } = {}) {
+    if (!Array.isArray(steps) || steps.length === 0) throw new Error('sequence: steps must be a non-empty array');
+    return this.input('sequence', steps.map((step, i) => toStep(step, i)), { sessionId, timeout });
   }
 
   async input(operation, steps, { sessionId, timeout }) {
@@ -544,6 +576,45 @@ function checkMs(ms, name) {
 
 function checkFrames(frames, operation, min = 0) {
   if (!Number.isSafeInteger(frames) || frames < min) throw new Error(`${operation}: frames must be an integer >= ${min}`);
+}
+
+function toStep(step, index) {
+  const at = `sequence: step ${index + 1}`;
+  const keys = ['button', 'axes', 'pose', 'connected', 'frames', 'wait'].filter(key => step && key in step);
+  if (keys.length !== 1) throw new Error(`${at} must have exactly one of button, axes, pose, connected, frames, wait`);
+  const [key] = keys;
+  if (key === 'button') {
+    const [hand, button, value] = step.button;
+    checkHand(hand);
+    if (!(value >= 0 && value <= 1)) throw new Error(`${at}: button value must be within [0, 1]`);
+    return { type: 'button', hand, button, value };
+  }
+  if (key === 'axes') {
+    const [hand, x, y] = step.axes;
+    checkHand(hand);
+    checkAxis(x);
+    checkAxis(y);
+    return { type: 'axes', hand, axes: step.id ?? 'thumbstick', x, y };
+  }
+  if (key === 'pose') {
+    checkHand(step.pose);
+    if (step.position !== undefined) checkVector(step.position, `${at}: position`);
+    if (step.quaternion !== undefined) checkQuaternion(step.quaternion);
+    return { type: 'pose', hand: step.pose, position: step.position, quaternion: step.quaternion };
+  }
+  if (key === 'connected') {
+    const [hand, value] = step.connected;
+    checkHand(hand);
+    if (typeof value !== 'boolean') throw new Error(`${at}: connected value must be a boolean`);
+    return { type: 'connected', hand, value };
+  }
+  if (key === 'frames') {
+    checkFrames(step.frames, at);
+    checkMs(step.ms ?? 0, `${at}: ms`);
+    return { type: 'frames', count: step.frames, minMs: step.ms ?? 0 };
+  }
+  checkMs(step.wait, `${at}: wait`);
+  return { type: 'frames', count: 0, minMs: step.wait };
 }
 
 function composePoseInverseApply(pose, point) {
