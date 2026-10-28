@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.4.1 — 2026-10-28
+
+### Fixed
+
+- `playwright-webxr/package.json` is now exported, so `require('playwright-webxr/package.json').version` (and the JSON import) can read the installed version. Up to 0.4.0 the `exports` map omitted it and both failed with `ERR_PACKAGE_PATH_NOT_EXPORTED`.
+
+### Upgrade
+
+```sh
+npm install -D playwright-webxr@^0.4.1
+```
+
+`^0.4.0` ranges already select this release. No API changes.
+
 ## 0.4.0 — 2026-10-28
 
 ### Added
