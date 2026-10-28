@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+### Documentation
+
+- The concurrent recording example for `sequence()` is now a complete recorder that rejects when its frame callback throws or when it times out. IWER only logs exceptions from XR frame callbacks, so a recorder without this never settled and the test waited silently until its timeout. The example is exercised by a test.
+
 ## 0.5.0 — 2026-10-28
 
 ### Added

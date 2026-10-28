@@ -257,8 +257,27 @@ For input that spans both hands or needs timing between steps, write the
 script once; it runs in the same frame-driven evaluation:
 
 ```js
+// Record what the app sees for 30 XR frames while the script runs. A recorder
+// that throws inside a frame callback must reject; otherwise the promise never
+// settles and the test waits silently until its timeout.
+const recording = page.evaluate(count => new Promise((resolve, reject) => {
+  const session = window.mySession;            // however your app exposes it
+  const frames = [];
+  const timer = setTimeout(() => reject(new Error(`recorder: ${frames.length}/${count} frames`)), 10_000);
+  const tick = (_time, frame) => {
+    try {
+      frames.push(window.myApp.snapshot(frame)); // your app state
+      if (frames.length === count) { clearTimeout(timer); resolve(frames); }
+      else session.requestAnimationFrame(tick);
+    } catch (error) {
+      clearTimeout(timer);
+      reject(error);                            // surface it instead of hanging
+    }
+  };
+  session.requestAnimationFrame(tick);
+}), 30);
+
 // Let go with the left hand, then tilt the right stick about 50 ms later.
-const recording = page.evaluate(() => window.myApp.recordFrames(30)); // optional, runs concurrently
 await xr.sequence([
   { button: ['left', 'squeeze', 0] }, { frames: 1 },
   { wait: 50 },
@@ -267,6 +286,12 @@ await xr.sequence([
 ]);
 const frames = await recording;
 ```
+
+IWER catches exceptions from XR frame callbacks and only logs them to the
+console. A recorder without the `try`/`catch` therefore either stops
+requesting frames or keeps throwing in every frame; in both cases its promise
+never settles. Neither the fixture nor `sequence()` can see that.
+Keep the recorder's own timeout shorter than the test's.
 
 Steps are `{ button: [hand, id, value] }`, `{ axes: [hand, x, y], id? }`
 (`id` defaults to `'thumbstick'`), `{ pose: hand, position?, quaternion? }`,
