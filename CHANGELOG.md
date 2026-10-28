@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.4.0 — 2026-10-28
 
 ### Added
 
@@ -17,6 +17,14 @@
 - `pressButton()` now holds for at least `holdMs` **and** `frames` XR frames (default 2) and confirms the release in a later frame. Previously a press and release could both land between two frames on a slow page, and IWER then applied only the release. It now requires an active session (a press without one never reached the app).
 - Controller input helpers reject unknown hands, button IDs and axes instead of silently doing nothing.
 - When the runtime is missing because `xr` was first requested after navigation, helpers explain that and how to fix it.
+
+### Upgrade
+
+```sh
+npm install -D playwright-webxr@^0.4.0
+```
+
+Existing `^0.3.0` dependency ranges do not select this release. `pressButton()` called without an active session now throws; such presses never reached the app before. Tests that wrote `__xrDevice` controller values directly can switch to `hold`/`release`/`drag`/`flick`/`disconnect`.
 
 ## 0.3.0 — 2026-09-13
 
