@@ -14,13 +14,38 @@
 import { test as base, expect } from '@playwright/test';
 import { createRequire } from 'node:module';
 import fs from 'node:fs/promises';
-import { installRuntime, readDiagnostics, runSessionOperation } from './runtime.mjs';
+import { installRuntime, readDiagnostics, readXRState, runInputScript, runSessionOperation } from './runtime.mjs';
+import { composePose, invertPose, poseFromMatrix, quatMultiply, rotateVector, transformPoint } from './pose.mjs';
 
 const require = createRequire(import.meta.url);
 
+const HANDS = ['left', 'right'];
+const FLICK = { left: [-1, 0], right: [1, 0], up: [0, -1], down: [0, 1] };
+
 export class XRHandle {
-  constructor(page) {
+  constructor(page, { lateUrl = null } = {}) {
     this.page = page;
+    this.lateUrl = lateUrl;
+  }
+
+  /** Explain the common reason the emulated device is missing. */
+  missingRuntime(error) {
+    const late = this.lateUrl
+      ? ` The xr fixture was first requested after the page had already navigated to ${this.lateUrl}.`
+      : '';
+    return new Error(`${error.message}: the IWER runtime is not installed in this document.${late} ` +
+      'The runtime is added with page.addInitScript(), which only affects documents loaded after the ' +
+      'xr fixture is first requested. Request xr (for example, test.beforeEach(async ({ page, xr }) => ...)) ' +
+      'before page.goto(), or reload the page.', { cause: error });
+  }
+
+  async evaluate(fn, arg) {
+    try {
+      return await this.page.evaluate(fn, arg);
+    } catch (error) {
+      if (/IWER device missing/.test(error.message)) throw this.missingRuntime(error);
+      throw error;
+    }
   }
 
   /** True once IWER's runtime has replaced navigator.xr on the page. */
@@ -169,7 +194,7 @@ export class XRHandle {
    * radians (XYZ order, applied in local axes like a human head).
    */
   async setHeadPose({ position, euler, quaternion } = {}) {
-    await this.page.evaluate(
+    await this.evaluate(
       ({ position, euler, quaternion }) => {
         const d = globalThis.__xrDevice;
         if (!d) throw new Error('IWER device missing');
@@ -194,11 +219,17 @@ export class XRHandle {
     );
   }
 
-  /** Move / orient a controller. hand: 'left' | 'right'. */
+  /**
+   * Move / orient a controller's target ray. hand: 'left' | 'right'.
+   * Use setGripPose() to place the grip (the point a hand holds) instead.
+   */
   async setControllerPose(hand, { position, quaternion } = {}) {
-    await this.page.evaluate(
+    checkHand(hand);
+    await this.evaluate(
       ({ hand, position, quaternion }) => {
-        const c = globalThis.__xrDevice?.controllers?.[hand];
+        const d = globalThis.__xrDevice;
+        if (!d) throw new Error('IWER device missing');
+        const c = d.controllers?.[hand];
         if (!c) throw new Error(`no ${hand} controller`);
         if (position) c.position.set(position[0], position[1], position[2]);
         if (quaternion) c.quaternion.set(quaternion[0], quaternion[1], quaternion[2], quaternion[3]);
@@ -207,32 +238,235 @@ export class XRHandle {
     );
   }
 
-  /** Press and release a controller button (e.g. 'trigger', 'a-button'). */
-  async pressButton(hand, button, { holdMs = 120 } = {}) {
-    await this.page.evaluate(
-      ({ hand, button }) => {
-        globalThis.__xrDevice.controllers[hand].updateButtonValue(button, 1);
-      },
-      { hand, button },
-    );
-    await this.page.waitForTimeout(holdMs);
-    await this.page.evaluate(
-      ({ hand, button }) => {
-        globalThis.__xrDevice.controllers[hand].updateButtonValue(button, 0);
-      },
-      { hand, button },
-    );
+  /**
+   * Current controller poses in tracking space: target ray and grip, as IWER
+   * computes the grip from the device profile's grip offset.
+   */
+  async controllerPose(hand) {
+    checkHand(hand);
+    const state = await this.evaluate(readXRState, { views: false });
+    const c = state.controllers[hand];
+    if (!c) throw new Error(`controllerPose: no ${hand} controller`);
+    const targetRay = { position: c.position, quaternion: c.quaternion };
+    const grip = c.gripOffsetMatrix ? composePose(targetRay, poseFromMatrix(c.gripOffsetMatrix)) : null;
+    return { targetRay, grip, connected: c.connected };
   }
 
-  /** Push an analog axis value (thumbstick): axis 2=x, 3=y on Quest profile. */
+  /**
+   * Place the controller so its grip is at { position, quaternion }. Without
+   * a quaternion, the current target-ray orientation is kept and only the
+   * grip point moves; the profile's grip offset rotates with the hand.
+   */
+  async setGripPose(hand, { position, quaternion } = {}) {
+    checkHand(hand);
+    const pose = await this.targetRayForGrip(hand, { position, quaternion });
+    await this.setControllerPose(hand, pose);
+    return pose;
+  }
+
+  async targetRayForGrip(hand, { position, quaternion }) {
+    if (position !== undefined) checkVector(position, 'position');
+    if (quaternion !== undefined) checkQuaternion(quaternion);
+    const state = await this.evaluate(readXRState, { views: false });
+    const c = state.controllers[hand];
+    if (!c) throw new Error(`no ${hand} controller`);
+    if (!c.gripOffsetMatrix) throw new Error(`${hand} controller profile has no grip offset`);
+    const offset = poseFromMatrix(c.gripOffsetMatrix);
+    // grip = targetRay * offset  =>  targetRay = grip * offset^-1
+    const inverse = invertPose(offset);
+    const currentGrip = composePose({ position: c.position, quaternion: c.quaternion }, offset);
+    const rayQuaternion = quaternion ? quatMultiply(quaternion, inverse.quaternion) : c.quaternion;
+    const gripPosition = position ?? currentGrip.position;
+    const lever = rotateVector(rayQuaternion, offset.position);
+    return { position: gripPosition.map((v, i) => v - lever[i]), quaternion: rayQuaternion };
+  }
+
+  /**
+   * Hold a button down until released. Resolves after IWER has applied the
+   * value in `frames` XR frames (default 1), so the app can observe it.
+   */
+  async hold(hand, button, { value = 1, frames = 1, sessionId, timeout = 10_000 } = {}) {
+    checkHand(hand);
+    if (!(value > 0 && value <= 1)) throw new Error('hold: value must be in (0, 1]');
+    checkFrames(frames, 'hold', 1);
+    return this.input('hold', [
+      { type: 'button', hand, button, value },
+      { type: 'frames', count: frames },
+    ], { sessionId, timeout });
+  }
+
+  /** Release a held button; resolves after IWER has applied the release. */
+  async release(hand, button, { frames = 1, sessionId, timeout = 10_000 } = {}) {
+    checkHand(hand);
+    checkFrames(frames, 'release', 1);
+    return this.input('release', [
+      { type: 'button', hand, button, value: 0 },
+      { type: 'frames', count: frames },
+    ], { sessionId, timeout });
+  }
+
+  /**
+   * Press and release a controller button (e.g. 'trigger', 'a-button'). The
+   * press lasts at least holdMs AND at least `frames` XR frames, then the
+   * release is applied in a further frame. A slow page cannot drop it.
+   */
+  async pressButton(hand, button, { holdMs = 120, frames = 2, sessionId, timeout = 10_000 } = {}) {
+    checkHand(hand);
+    checkMs(holdMs, 'holdMs');
+    checkFrames(frames, 'pressButton', 1);
+    return this.input('pressButton', [
+      { type: 'button', hand, button, value: 1 },
+      { type: 'frames', count: frames, minMs: holdMs },
+      { type: 'button', hand, button, value: 0 },
+      { type: 'frames', count: 1 },
+    ], { sessionId, timeout });
+  }
+
+  /**
+   * Grab, move along a straight path and release in one frame-driven run.
+   * from/to are target-ray positions, or grip positions with space: 'grip'.
+   * The path takes at least `ms` and at least `steps` XR frames.
+   */
+  async drag(hand, {
+    from, to, ms = 300, steps = 5, button = 'squeeze', quaternion, toQuaternion,
+    space = 'targetRay', release = true, sessionId, timeout,
+  } = {}) {
+    checkHand(hand);
+    checkVector(from, 'from');
+    checkVector(to, 'to');
+    checkMs(ms, 'ms');
+    checkFrames(steps, 'drag', 1);
+    if (!['targetRay', 'grip'].includes(space)) throw new Error("drag: space must be 'targetRay' or 'grip'");
+    if (toQuaternion && !quaternion) throw new Error('drag: toQuaternion requires quaternion');
+    let start = { position: from, quaternion };
+    let end = { position: to, quaternion: toQuaternion ?? quaternion };
+    if (space === 'grip') {
+      start = await this.targetRayForGrip(hand, start);
+      end = await this.targetRayForGrip(hand, { position: to, quaternion: toQuaternion ?? quaternion });
+    }
+    const steps_ = [
+      { type: 'pose', hand, position: start.position, quaternion: start.quaternion },
+      { type: 'frames', count: 1 },
+      { type: 'button', hand, button, value: 1 },
+      { type: 'frames', count: 1 },
+      {
+        type: 'move', hand, from: start.position, to: end.position, ms, steps,
+        fromQuaternion: start.quaternion ?? null, toQuaternion: end.quaternion ?? null,
+      },
+      { type: 'frames', count: 1 },
+    ];
+    if (release) steps_.push({ type: 'button', hand, button, value: 0 }, { type: 'frames', count: 1 });
+    return this.input('drag', steps_, { sessionId, timeout: timeout ?? Math.max(10_000, ms * 4) });
+  }
+
+  /** Push an analog axis value (thumbstick) immediately; it stays until changed. */
   async setAxes(hand, x, y) {
-    await this.page.evaluate(
+    checkHand(hand);
+    await this.evaluate(
       ({ hand, x, y }) => {
-        const c = globalThis.__xrDevice.controllers[hand];
-        c.updateAxes('thumbstick', x, y);
+        const d = globalThis.__xrDevice;
+        if (!d) throw new Error('IWER device missing');
+        d.controllers[hand].updateAxes('thumbstick', x, y);
       },
       { hand, x, y },
     );
+  }
+
+  /**
+   * Hold the thumbstick at (x, y) for at least ms and `frames` XR frames, then
+   * return it to centre and wait one frame. Use for repeat-rate behaviour.
+   */
+  async holdAxes(hand, x, y, { ms = 0, frames = 2, axes = 'thumbstick', sessionId, timeout } = {}) {
+    checkHand(hand);
+    checkAxis(x);
+    checkAxis(y);
+    checkMs(ms, 'ms');
+    checkFrames(frames, 'holdAxes', 1);
+    return this.input('holdAxes', [
+      { type: 'axes', hand, axes, x, y },
+      { type: 'frames', count: frames, minMs: ms },
+      { type: 'axes', hand, axes, x: 0, y: 0 },
+      { type: 'frames', count: 1 },
+    ], { sessionId, timeout: timeout ?? Math.max(10_000, ms * 4) });
+  }
+
+  /**
+   * One short thumbstick tilt: 'left' | 'right' | 'up' | 'down' ('up' is y = -1,
+   * as on the WebXR gamepad). Held for `frames` XR frames, then centred.
+   */
+  async flick(hand, direction, { magnitude = 1, frames = 2, ms = 0, sessionId, timeout } = {}) {
+    const vector = FLICK[direction];
+    if (!vector) throw new Error(`flick: direction must be one of ${Object.keys(FLICK).join(', ')}`);
+    if (!(magnitude > 0 && magnitude <= 1)) throw new Error('flick: magnitude must be in (0, 1]');
+    return this.holdAxes(hand, vector[0] * magnitude, vector[1] * magnitude, { frames, ms, sessionId, timeout });
+  }
+
+  /**
+   * Disconnect a controller (sleep, battery, tracking loss). Resolves after
+   * the XR frame in which the session's input sources changed.
+   */
+  async disconnect(hand, { sessionId, timeout = 10_000 } = {}) {
+    checkHand(hand);
+    return this.input('disconnect', [
+      { type: 'connected', hand, value: false },
+      { type: 'frames', count: 1 },
+    ], { sessionId, timeout });
+  }
+
+  async reconnect(hand, { sessionId, timeout = 10_000 } = {}) {
+    checkHand(hand);
+    return this.input('reconnect', [
+      { type: 'connected', hand, value: true },
+      { type: 'frames', count: 1 },
+    ], { sessionId, timeout });
+  }
+
+  /**
+   * Haptic pulses the app requested in this document, oldest first:
+   * [{ hand, actuator, value, duration, t }]. Optionally filter by hand.
+   */
+  async haptics(hand) {
+    if (hand !== undefined) checkHand(hand);
+    return this.evaluate(hand => {
+      const state = globalThis.__pwWebXR;
+      if (!state) throw new Error('IWER device missing');
+      return state.haptics.filter(entry => hand === undefined || entry.hand === hand);
+    }, hand);
+  }
+
+  /**
+   * Project a tracking-space point through one XR frame's view. Returns NDC,
+   * whether it is inside the view frustum, its canvas pixel (top-left origin)
+   * when the base layer viewport is known, the angle from the view axis, and
+   * the pixels per degree at the view centre.
+   */
+  async projectPoint(point, { eye, timeout = 2_000 } = {}) {
+    checkVector(point, 'point');
+    checkTimeout(timeout);
+    const state = await this.evaluate(readXRState, { timeout });
+    if (!state.views) throw new Error(`projectPoint: ${state.viewsReason}`);
+    const view = eye ? state.views.find(v => v.eye === eye)
+      : state.views.find(v => v.viewport?.width > 0) ?? state.views[0];
+    if (!view) throw new Error(`projectPoint: no ${eye} view (have: ${state.views.map(v => v.eye).join(', ')})`);
+    const eyePose = composePose(state.head, view);
+    const local = composePoseInverseApply(eyePose, point);
+    const [cx, cy, cz, cw] = transformPoint(view.projectionMatrix, local);
+    const ndc = [cx / cw, cy / cw, cz / cw];
+    const inView = cw > 0 && ndc.every(c => c >= -1 && c <= 1);
+    const vp = view.viewport;
+    const pixel = vp && vp.width > 0 && view.canvasHeight != null ? [
+      vp.x + (ndc[0] + 1) / 2 * vp.width,
+      view.canvasHeight - (vp.y + (ndc[1] + 1) / 2 * vp.height),
+    ] : null;
+    const degreesFromCenter = Math.acos(Math.max(-1, Math.min(1, -local[2] / Math.hypot(...local)))) * 180 / Math.PI;
+    const pixelsPerDegree = vp && vp.height > 0 ? vp.height / 2 * view.projectionMatrix[5] * Math.PI / 180 : null;
+    return { eye: view.eye, ndc, inView, behind: cw <= 0, pixel, degreesFromCenter, pixelsPerDegree, viewport: vp };
+  }
+
+  async input(operation, steps, { sessionId, timeout }) {
+    checkSessionId(sessionId);
+    checkTimeout(timeout);
+    return this.evaluate(runInputScript, { operation, steps, sessionId, timeout });
   }
 
   /**
@@ -284,6 +518,40 @@ function checkTimeout(timeout) {
   if (!Number.isFinite(timeout) || timeout <= 0) throw new Error('timeout must be a positive finite number');
 }
 
+function checkHand(hand) {
+  if (!HANDS.includes(hand)) throw new Error(`hand must be 'left' or 'right' (got ${JSON.stringify(hand)})`);
+}
+
+function checkVector(v, name) {
+  if (!Array.isArray(v) || v.length !== 3 || !v.every(Number.isFinite)) {
+    throw new Error(`${name} must be [x, y, z] finite numbers`);
+  }
+}
+
+function checkQuaternion(q) {
+  if (!Array.isArray(q) || q.length !== 4 || !q.every(Number.isFinite) || Math.hypot(...q) < 1e-9) {
+    throw new Error('quaternion must be [x, y, z, w] finite numbers, not all zero');
+  }
+}
+
+function checkAxis(v) {
+  if (!Number.isFinite(v) || v < -1 || v > 1) throw new Error('axis values must be within [-1, 1]');
+}
+
+function checkMs(ms, name) {
+  if (!Number.isFinite(ms) || ms < 0) throw new Error(`${name} must be a non-negative finite number`);
+}
+
+function checkFrames(frames, operation, min = 0) {
+  if (!Number.isSafeInteger(frames) || frames < min) throw new Error(`${operation}: frames must be an integer >= ${min}`);
+}
+
+function composePoseInverseApply(pose, point) {
+  const inverse = invertPose(pose);
+  const rotated = rotateVector(inverse.quaternion, point);
+  return rotated.map((c, i) => c + inverse.position[i]);
+}
+
 function checkSessionId(sessionId) {
   if (sessionId !== undefined && (typeof sessionId !== 'string' || !sessionId.trim())) {
     throw new Error('sessionId must be a non-empty string');
@@ -306,8 +574,12 @@ export const test = base.extend({
     const source = await fs.readFile(require.resolve('iwer/build/iwer.min.js'), 'utf8');
     const options = { deviceName: xrDeviceName, stereoEnabled: xrStereoEnabled, ipd, versions };
     // Playwright does not define ordering across separate addInitScript calls.
+    // addInitScript only reaches documents loaded from now on; remember a
+    // late request so a missing runtime can be explained instead of guessed.
+    const url = page.url();
+    const lateUrl = url && url !== 'about:blank' ? url : null;
     await page.addInitScript({ content: `${source}\n;(${installRuntime.toString()})(${JSON.stringify(options)});` });
-    await use(new XRHandle(page));
+    await use(new XRHandle(page, { lateUrl }));
   },
 });
 
