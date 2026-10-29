@@ -2,7 +2,16 @@
 
 Playwright fixture for testing **WebXR apps in CI** — no headset required. Wraps Meta's [IWER](https://github.com/meta-quest/immersive-web-emulation-runtime) (Immersive Web Emulation Runtime) into a `@playwright/test` fixture: enter `immersive-vr` sessions in headless Chromium, drive headset/controller poses from test code, and capture frames for visual assertion.
 
-Status: **MVP** (2026-07-29). First real-world catch on day one: a billboard shader that follows head-roll — the class of bug that normally requires putting on a Quest to notice.
+First real-world catch on day one: a billboard shader that follows head-roll — the class of bug that normally requires putting on a Quest to notice. Since then it has been driven by feedback from projects with about 100 scripts each.
+
+**Use it when** you see any of these:
+
+- `navigator.xr.isSessionSupported('immersive-vr')` resolves `false`, or `requestSession()` rejects with `NotSupportedError`, in headless Chromium or CI.
+- The app's "Enter VR" button never appears or does nothing under Playwright.
+- You need to move the headset or controllers, press trigger/squeeze/A/B, tilt a thumbstick, grab and drag, or simulate a controller disconnect from a test.
+- A press sent with `updateButtonValue()` sometimes never reaches the app on a loaded machine.
+
+For coding agents, [`llms.txt`](llms.txt) (also in the npm package) summarises the API and the mistakes earlier users made.
 
 ## Why
 
@@ -257,8 +266,27 @@ For input that spans both hands or needs timing between steps, write the
 script once; it runs in the same frame-driven evaluation:
 
 ```js
+// Record what the app sees for 30 XR frames while the script runs. A recorder
+// that throws inside a frame callback must reject; otherwise the promise never
+// settles and the test waits silently until its timeout.
+const recording = page.evaluate(count => new Promise((resolve, reject) => {
+  const session = window.mySession;            // however your app exposes it
+  const frames = [];
+  const timer = setTimeout(() => reject(new Error(`recorder: ${frames.length}/${count} frames`)), 10_000);
+  const tick = (_time, frame) => {
+    try {
+      frames.push(window.myApp.snapshot(frame)); // your app state
+      if (frames.length === count) { clearTimeout(timer); resolve(frames); }
+      else session.requestAnimationFrame(tick);
+    } catch (error) {
+      clearTimeout(timer);
+      reject(error);                            // surface it instead of hanging
+    }
+  };
+  session.requestAnimationFrame(tick);
+}), 30);
+
 // Let go with the left hand, then tilt the right stick about 50 ms later.
-const recording = page.evaluate(() => window.myApp.recordFrames(30)); // optional, runs concurrently
 await xr.sequence([
   { button: ['left', 'squeeze', 0] }, { frames: 1 },
   { wait: 50 },
@@ -267,6 +295,12 @@ await xr.sequence([
 ]);
 const frames = await recording;
 ```
+
+IWER catches exceptions from XR frame callbacks and only logs them to the
+console. A recorder without the `try`/`catch` therefore either stops
+requesting frames or keeps throwing in every frame; in both cases its promise
+never settles. Neither the fixture nor `sequence()` can see that.
+Keep the recorder's own timeout shorter than the test's.
 
 Steps are `{ button: [hand, id, value] }`, `{ axes: [hand, x, y], id? }`
 (`id` defaults to `'thumbstick'`), `{ pose: hand, position?, quaternion? }`,

@@ -294,3 +294,37 @@ test('sequence runs a timed two-hand script alongside in-page recording', async 
   await expect(xr.sequence([{ button: ['left', 'grip', 1] }])).rejects.toThrow(/no button 'grip'/);
   await expect(xr.sequence([])).rejects.toThrow(/non-empty/);
 });
+
+// The README's concurrent recorder, verbatim except for the app hooks.
+const readmeRecorder = count => new Promise((resolve, reject) => {
+  const session = window.mySession;
+  const frames = [];
+  const timer = setTimeout(() => reject(new Error(`recorder: ${frames.length}/${count} frames`)), 10_000);
+  const tick = (_time, frame) => {
+    try {
+      frames.push(window.myApp.snapshot(frame));
+      if (frames.length === count) { clearTimeout(timer); resolve(frames); }
+      else session.requestAnimationFrame(tick);
+    } catch (error) {
+      clearTimeout(timer);
+      reject(error);
+    }
+  };
+  session.requestAnimationFrame(tick);
+});
+
+test('README recorder runs alongside sequence and rejects promptly when it throws', async ({ page, xr }) => {
+  await page.evaluate(() => {
+    window.mySession = window.session;
+    window.myApp = { snapshot: () => Array.from(window.session.inputSources).find(s => s.handedness === 'right').gamepad.axes[3] };
+  });
+  const recording = page.evaluate(readmeRecorder, 10);
+  await xr.sequence([{ axes: ['right', 0, -1] }, { frames: 2 }, { axes: ['right', 0, 0] }, { frames: 1 }]);
+  expect(await recording).toContain(-1);
+
+  // The reported mistake: calling a getter as a function throws in every frame.
+  await page.evaluate(() => { window.myApp = { get snapshot() { return 1; } }; });
+  const started = Date.now();
+  await expect(page.evaluate(readmeRecorder, 10)).rejects.toThrow(/not a function/);
+  expect(Date.now() - started).toBeLessThan(2_000);
+});
