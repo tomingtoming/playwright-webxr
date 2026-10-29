@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.5.1 — 2026-10-29
 
 ### Added
 
@@ -10,6 +10,14 @@
 
 - The README opens with the symptoms this package addresses (`isSessionSupported` false or `NotSupportedError` in headless Chromium, a VR button that never works under Playwright, lost presses on loaded machines).
 - The concurrent recording example for `sequence()` is now a complete recorder that rejects when its frame callback throws or when it times out. IWER only logs exceptions from XR frame callbacks, so a recorder without this never settled and the test waited silently until its timeout. The example is exercised by a test.
+
+### Upgrade
+
+```sh
+npm install -D playwright-webxr@^0.5.1
+```
+
+`^0.5.0` ranges already select this release. No API changes.
 
 ## 0.5.0 — 2026-10-28
 
