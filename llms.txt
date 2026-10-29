@@ -1,0 +1,49 @@
+# playwright-webxr
+
+> Playwright fixture that runs WebXR (`immersive-vr`) apps in headless Chromium and CI with Meta's IWER emulator. No headset. Tests enter VR through the app's own button, then drive the headset, controllers, buttons, thumbsticks, grabs and disconnects frame-synchronously. They read diagnostics, haptics and projections back.
+
+Install: `npm i -D playwright-webxr @playwright/test`. Import `test` and `expect` from `playwright-webxr` instead of `@playwright/test`; the `xr` fixture is added. Full documentation: README.md in this package or https://github.com/tomingtoming/playwright-webxr. Coordinates are IWER tracking space, metres. Quaternions are `[x, y, z, w]`. Hands are `'left' | 'right'`.
+
+## Minimal test
+
+```js
+import { test, expect } from 'playwright-webxr';
+
+test.beforeEach(async ({ page, xr }) => { // take xr BEFORE page.goto
+  await page.goto('http://localhost:5173/');
+});
+
+test('grab and move', async ({ page, xr }) => {
+  await xr.enterVR();                 // clicks the app's VR button, confirms a live session
+  await xr.waitForFrames(2);
+  await xr.drag('right', { from: [0.2, 1.3, -0.4], to: [0.4, 1.3, -0.4], space: 'grip' });
+  await xr.pressButton('right', 'trigger');
+  expect(await page.evaluate(() => window.app.state())).toMatchObject({ moved: true });
+});
+```
+
+## API (all on `xr`, all async)
+
+- Session: `enterVR({ button?, force?, timeout? })`, `waitForSession(timeout?)`, `endSession({ sessionId?, timeout? })`, `waitForFrames(count, { sessionId?, timeout? })`, `sessionMode()`, `sessionLog()`, `sessionCursor()`, `waitForSessionEvent(event, { after?, sessionId?, timeout? })`, `runtimeInstalled()`, `settle(ms)` (wall time only).
+- Poses: `setHeadPose({ position?, euler?, quaternion? })`, `setControllerPose(hand, { position?, quaternion? })` (target ray), `setGripPose(hand, { position?, quaternion? })` (the point a hand holds), `controllerPose(hand)` returns `{ targetRay, grip, connected }`.
+- Buttons: `pressButton(hand, id, { holdMs?, frames? })`, `hold(hand, id, { value?, frames? })`, `release(hand, id)`. IDs on Quest profiles: `trigger`, `squeeze`, `thumbstick`, `thumbrest`, `a-button`, `b-button` (right), `x-button`, `y-button` (left). Unknown IDs throw.
+- Movement: `drag(hand, { from, to, ms?, steps?, button?, quaternion?, toQuaternion?, space?: 'targetRay' | 'grip', release?, settleFrames? })`.
+- Thumbstick: `setAxes(hand, x, y)` (immediate, stays), `holdAxes(hand, x, y, { ms?, frames?, release? })`, `flick(hand, 'left' | 'right' | 'up' | 'down')` (`up` is y = -1).
+- Scripts: `sequence(steps, { sessionId?, timeout? })` with steps `{ button: [hand, id, value] }`, `{ axes: [hand, x, y], id? }`, `{ pose: hand, position?, quaternion? }`, `{ connected: [hand, boolean] }`, `{ frames: n, ms? }`, `{ wait: ms }`.
+- Devices: `disconnect(hand)`, `reconnect(hand)`, `haptics(hand?, { after? })`, `hapticsCursor()`.
+- Observation: `diagnostics({ canvas?, timeout? })`, `screenshot(path, { canvas?, timeout?, metadata? })`, `projectPoint(point, { eye? })` returns `{ ndc, inView, behind, pixel, degreesFromCenter, pixelsPerDegree, viewport }`.
+- Options via `test.use()`: `xrDeviceName` (default `'metaQuest3'`), `xrStereoEnabled` (default `false`), `xrIpd`.
+- Helper: `import { aimQuaternion } from 'playwright-webxr/examples/aim-controller'` aims a target ray from one tracking-space point at another.
+
+## Rules that prevent the mistakes earlier users made
+
+- Request `xr` before the first `page.goto()`. A `beforeEach(({ page }) => page.goto(...))` without `xr` loads the page without the emulator. Helpers then throw an error that explains this.
+- Do not write `globalThis.__xrDevice` directly. IWER applies a button value only at the start of the next XR frame and keeps only the last value written. A press and release between two frames are lost. Every helper above waits for XR frames and is safe on slow machines. Use `sequence()` for custom timing.
+- `setControllerPose()` places the target ray. The grip is about 5 cm away and pitched about 45° on Quest profiles, and it rotates with the hand. Use `setGripPose()` or `drag({ space: 'grip' })` for grabbing. With `space: 'grip'`, quaternions are grip orientations; when omitted, the target ray's orientation is kept.
+- `drag()` holds the end pose for 2 frames before releasing (`settleFrames`), for apps that follow the hand one frame late.
+- Read app state in one `page.evaluate()` per snapshot. Several evaluations can straddle XR frames.
+- A recorder running concurrently with `sequence()` must catch exceptions inside its XR frame callback and reject. IWER only logs them, so the promise otherwise never settles and the test hangs until its timeout.
+- Pulses are often sent on timers: `await expect.poll(async () => (await xr.haptics('right', { after })).length).toBe(n)`.
+- Judge legibility in degrees with `projectPoint()`. The emulator shows about 4.7 px/degree at 960×540; a Quest 3 shows about 25.
+- `xr.screenshot()` captures the canvas only; composition layers may not appear. A green run proves the app agrees with the WebXR spec as IWER reads it, not with a specific headset.
+- Do not install from a `file:` link or `npm link`: `@playwright/test` loads twice ("did not expect test() to be called here"). Install an `npm pack` tarball.

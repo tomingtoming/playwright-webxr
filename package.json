@@ -19,7 +19,8 @@
   "type": "module",
   "files": [
     "src",
-    "examples"
+    "examples",
+    "llms.txt"
   ],
   "dependencies": {
     "iwer": "^2.3.0"
@@ -34,7 +35,8 @@
   "exports": {
     ".": "./src/index.mjs",
     "./examples/aim-controller": "./examples/aim-controller.mjs",
-    "./package.json": "./package.json"
+    "./package.json": "./package.json",
+    "./llms.txt": "./llms.txt"
   },
   "repository": "github:tomingtoming/playwright-webxr"
 }

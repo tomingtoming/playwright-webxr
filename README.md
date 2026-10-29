@@ -2,7 +2,16 @@
 
 Playwright fixture for testing **WebXR apps in CI** — no headset required. Wraps Meta's [IWER](https://github.com/meta-quest/immersive-web-emulation-runtime) (Immersive Web Emulation Runtime) into a `@playwright/test` fixture: enter `immersive-vr` sessions in headless Chromium, drive headset/controller poses from test code, and capture frames for visual assertion.
 
-Status: **MVP** (2026-07-29). First real-world catch on day one: a billboard shader that follows head-roll — the class of bug that normally requires putting on a Quest to notice.
+First real-world catch on day one: a billboard shader that follows head-roll — the class of bug that normally requires putting on a Quest to notice. Since then it has been driven by feedback from projects with about 100 scripts each.
+
+**Use it when** you see any of these:
+
+- `navigator.xr.isSessionSupported('immersive-vr')` resolves `false`, or `requestSession()` rejects with `NotSupportedError`, in headless Chromium or CI.
+- The app's "Enter VR" button never appears or does nothing under Playwright.
+- You need to move the headset or controllers, press trigger/squeeze/A/B, tilt a thumbstick, grab and drag, or simulate a controller disconnect from a test.
+- A press sent with `updateButtonValue()` sometimes never reaches the app on a loaded machine.
+
+For coding agents, [`llms.txt`](llms.txt) (also in the npm package) summarises the API and the mistakes earlier users made.
 
 ## Why
 
