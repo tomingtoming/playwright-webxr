@@ -19,12 +19,20 @@ import { composePose, invertPose, poseFromMatrix, quatMultiply, rotateVector, tr
 
 const require = createRequire(import.meta.url);
 
-// Published figures, split evenly: nominal: true means NOT a per-eye measurement.
-// Real frustums are asymmetric; measure the headset and pass your own spec
-// ({ fov: { outer, inner, up, down }, pixelsPerDegree, ipd? }) when it matters.
+// WebXR frustums measured with scripts/device-fov (one unit each, 2026-11-05,
+// Meta Quest Browser 154). pixelsPerDegree is what a default-scale XRWebGLLayer
+// renders at the view centre; panelPixelsPerDegree is the published display figure.
+// Quest 3 did not change with IPD (58 and 69 mm). Quest 3S changes per lens stop,
+// so quest3s (the 63 mm stop) has siblings for the other two. Pass your own spec
+// ({ fov: { outer, inner, up, down }, pixelsPerDegree, ipd? }) for other devices.
+const spec = (outer, inner, up, down, pixelsPerDegree, panelPixelsPerDegree, ipd) => Object.freeze({
+  fov: Object.freeze({ outer, inner, up, down }), pixelsPerDegree, panelPixelsPerDegree, ipd,
+});
 export const XR_DEVICE_SPECS = Object.freeze({
-  quest3s: Object.freeze({ nominal: true, fov: Object.freeze({ outer: 48, inner: 48, up: 45, down: 45 }), pixelsPerDegree: 20 }),
-  quest3: Object.freeze({ nominal: true, fov: Object.freeze({ outer: 55, inner: 55, up: 48, down: 48 }), pixelsPerDegree: 25 }),
+  quest3: spec(54, 40, 44, 55, 12.83, 25, 0.063),
+  quest3s: spec(49, 45, 48, 50, 13.34, 20, 0.063),
+  quest3s58: spec(52, 42, 48, 50, 13.34, 20, 0.058),
+  quest3s68: spec(43, 45, 48, 50, 13.34, 20, 0.068),
 });
 
 const HANDS = ['left', 'right'];
@@ -665,7 +673,7 @@ function resolveDeviceSpec(device) {
     throw new Error('projectPoint: device.fov needs outer, inner, up and down in degrees (0 to 90)');
   }
   if (!(spec.pixelsPerDegree > 0)) throw new Error('projectPoint: device.pixelsPerDegree must be positive');
-  return { ipd: 0.063, nominal: false, ...spec };
+  return { ipd: 0.063, ...spec };
 }
 
 function deviceView([x, y, z], spec, angularSize) {
@@ -682,7 +690,7 @@ function deviceView([x, y, z], spec, angularSize) {
   const left = eye(-spec.ipd / 2, -1);
   const right = eye(spec.ipd / 2, 1);
   return {
-    nominal: spec.nominal, left, right,
+    left, right,
     inBothEyes: left.inView && right.inView,
     apparentPixels: angularSize === undefined ? null : angularSize * spec.pixelsPerDegree,
   };

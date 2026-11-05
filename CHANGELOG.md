@@ -5,7 +5,8 @@
 ### Added
 
 - `projectPoint(point, { space: 'viewer' })` projects head-locked points. Results now include `angles` (frustum-aligned horizontal and vertical degrees) and `distance`; `size` adds `angularSize`.
-- `projectPoint(point, { device })` adds each eye's angles, `inView` and `margin` for a headset, plus `inBothEyes` and `apparentPixels`. `XR_DEVICE_SPECS` provides nominal `quest3s` and `quest3`; pass a measured spec for asymmetric frustums. No comfort threshold is built in.
+- `projectPoint(point, { device })` adds each eye's angles, `inView` and `margin` for a headset, plus `inBothEyes` and `apparentPixels`. `XR_DEVICE_SPECS` provides `quest3`, `quest3s`, `quest3s58` and `quest3s68`, measured on real headsets; Quest 3S frustums change per lens stop, Quest 3 did not at 58 and 69 mm. Pass your own spec for other devices. No comfort threshold is built in.
+- `scripts/device-fov` (not in the npm package) records a headset's per-eye frustums.
 
 ### Documentation
 

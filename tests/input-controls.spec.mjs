@@ -1,5 +1,5 @@
 import fs from 'node:fs/promises';
-import { test, expect } from '../src/index.mjs';
+import { test, expect, XR_DEVICE_SPECS } from '../src/index.mjs';
 import { composePose, invertPose } from '../src/pose.mjs';
 
 const world = await fs.readFile(new URL('./fixtures/world.html', import.meta.url), 'utf8');
@@ -385,13 +385,25 @@ test('projectPoint reports head-locked angles, size and a device field of view',
   expect(icon.angles.vertical).toBeCloseTo(-23.75, 2);
   expect(icon.degreesFromCenter).toBeCloseTo(36.65, 2);
   expect(icon.angularSize).toBeCloseTo(2.76, 2);
-  expect(icon.device.apparentPixels).toBeCloseTo(55.2, 0);
-  expect(icon.device.nominal).toBe(true);
+  expect(icon.device.apparentPixels).toBeCloseTo(36.8, 0);
   // Each eye sees it at a different angle: farther in the right eye, on its nasal side.
   expect(icon.device.left.horizontal).toBeCloseTo(-28.2, 0);
   expect(icon.device.right.horizontal).toBeCloseTo(-33.5, 0);
-  expect(icon.device.right.margin).toBeLessThan(icon.device.left.margin);
+  expect(icon.device.right.margin).toBeCloseTo(11.46, 1);
+  expect(icon.device.left.margin).toBeCloseTo(20.76, 1);
   expect(icon.device.inBothEyes).toBe(true);
+});
+
+test('measured specs reflect asymmetric frustums and the Quest 3S lens stops', async ({ xr }) => {
+  const icon = [-0.3, -0.22, -0.5];
+  const on = async device => (await xr.projectPoint(icon, { space: 'viewer', device })).device;
+  // Narrow nasal side on Quest 3: much closer to the edge than an even split of 110 degrees.
+  expect((await on('quest3')).right.margin).toBeCloseTo(6.46, 1);
+  // Quest 3S: the same point at each lens stop.
+  expect((await on('quest3s58')).right.margin).toBeCloseTo(8.65, 1);
+  expect((await on('quest3s68')).right.margin).toBeCloseTo(11.25, 1);
+  // At the widest stop, the outer side is the narrower one.
+  expect(XR_DEVICE_SPECS.quest3s68.fov.outer).toBeLessThan(XR_DEVICE_SPECS.quest3s68.fov.inner);
 });
 
 test('the emulator frustum is not a headset field of view', async ({ xr }) => {
@@ -403,7 +415,6 @@ test('the emulator frustum is not a headset field of view', async ({ xr }) => {
   // Measured frustums are passed as a spec; the right eye mirrors outer and inner.
   const measured = { fov: { outer: 50, inner: 30, up: 40, down: 50 }, pixelsPerDegree: 20, ipd: 0 };
   const left = await xr.projectPoint([-Math.tan(40 * Math.PI / 180), 0, -1], { space: 'viewer', device: measured });
-  expect(left.device.nominal).toBe(false);
   expect(left.device.left.inView).toBe(true);
   expect(left.device.right.inView).toBe(false);
   await expect(xr.projectPoint([0, 0, -1], { device: 'quest9' })).rejects.toThrow(/unknown device.*quest3s/);

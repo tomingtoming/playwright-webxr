@@ -372,11 +372,12 @@ headset. Three things differ:
 
 - **The emulator's frustum is not a headset's.** IWER uses a 90° vertical field
   of view and takes the horizontal one from the canvas aspect ratio, so a 16:9
-  canvas shows about 121° across. Quest 3S is specified at 96° × 90°, Quest 3 at
-  110° × 96°. `inView` only means "inside the emulator's frustum".
-- **Pixels are not comparable.** 960 × 540 gives about 4.7 px per degree at the
-  centre; Quest 3S is specified at about 20 and Quest 3 at about 25.
-- **Each eye sees a different angle.** Off-centre items sit farther out in one eye.
+  canvas shows about 121° across. A Quest 3 eye was measured at 94° × 99°.
+  `inView` only means "inside the emulator's frustum".
+- **Pixels are not comparable, and spec sheets do not describe WebXR.** 960 × 540
+  gives about 4.7 px per degree at the centre. Quest 3 is specified at 25, but
+  Meta Quest Browser's default framebuffer renders about 12.8 there.
+- **Each eye sees a different angle**, and the frustums are asymmetric.
 
 So check head-locked UI in degrees, against a device:
 
@@ -389,9 +390,9 @@ icon.angles;                // { horizontal: -30.96, vertical: -23.75 }
 icon.degreesFromCenter;     // 36.65
 icon.angularSize;           // 2.76
 icon.inView;                // true, in the emulator only
-icon.device.right;          // { horizontal: -33.5, vertical: -23.75, inView: true, margin: 14.5 }
+icon.device.right;          // { horizontal: -33.5, vertical: -23.75, inView: true, margin: 11.5 }
 icon.device.inBothEyes;     // true
-icon.device.apparentPixels; // 55
+icon.device.apparentPixels; // 37, at the default framebuffer scale
 expect(Math.abs(icon.angles.horizontal)).toBeLessThan(20); // your own limit: fails here
 ```
 
@@ -401,14 +402,25 @@ comfortable to read: the package reports geometry and sets **no comfort
 threshold**. Choose your own limit and pin it in a test, ideally after checking
 on a headset once. Lens sharpness away from the centre is not modelled.
 
-The built-in `quest3s` and `quest3` entries in `XR_DEVICE_SPECS` are **published
-totals split evenly** (`device.nominal: true`). Real per-eye frustums are
-asymmetric, usually narrower on the nasal side. If an item is close to an edge,
-pass a measured spec, in degrees, with `outer`/`inner` as seen from the left eye
-(mirrored for the right):
+`XR_DEVICE_SPECS` holds frustums measured with `scripts/device-fov` on one unit
+of each headset (2026-11-05, Meta Quest Browser 154). Values are degrees from
+the left eye's point of view; the right eye mirrors them.
+
+| Device | Lens setting | Outer | Inner | Up | Down | Rendered px/° at centre |
+| --- | --- | --- | --- | --- | --- | --- |
+| `quest3` | 58 and 69 mm gave the same result | 54 | 40 | 44 | 55 | 12.83 |
+| `quest3s58` | 58 mm stop | 52 | 42 | 48 | 50 | 13.34 |
+| `quest3s` | 63 mm stop | 49 | 45 | 48 | 50 | 13.34 |
+| `quest3s68` | 68 mm stop | 43 | 45 | 48 | 50 | 13.34 |
+
+These are the frustums the browser gives the app, not the area a person actually
+sees, which also depends on the lenses and the fit. They may change with browser
+or OS updates. For another device, or to re-check, run
+`node scripts/device-fov/server.mjs results.jsonl`, open it on the headset over
+HTTPS and pass your own spec (`pixelsPerDegree` should match your framebuffer scale):
 
 ```js
-const device = { fov: { outer: 50, inner: 40, up: 42, down: 50 }, pixelsPerDegree: 20, ipd: 0.063 };
+const device = { fov: { outer: 50, inner: 40, up: 42, down: 50 }, pixelsPerDegree: 13, ipd: 0.063 };
 await xr.projectPoint(point, { space: 'viewer', size: 0.03, device });
 ```
 
