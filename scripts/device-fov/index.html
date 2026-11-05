@@ -1,0 +1,105 @@
+<!doctype html>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Headset field-of-view probe</title>
+<style>
+  body { font: 20px system-ui, sans-serif; margin: 2rem; max-width: 40rem; }
+  button { font: inherit; padding: 1rem 2rem; margin: .5rem .5rem .5rem 0; }
+  pre { font-size: 14px; white-space: pre-wrap; }
+</style>
+<h1>Headset field-of-view probe</h1>
+<p>Press the button for this headset. The view turns green for about 2 seconds, then VR ends by itself and the result is sent.</p>
+<p><button data-device="quest3s">Quest 3S</button><button data-device="quest3">Quest 3</button></p>
+<p id="status">Ready.</p>
+<pre id="result"></pre>
+<canvas id="c" hidden></canvas>
+<script>
+  const FRAMES = 120;
+  const status = text => { document.querySelector('#status').textContent = text; };
+  const deg = radians => radians * 180 / Math.PI;
+
+  // Column-major perspective matrix to the four frustum edges in degrees.
+  function frustum(p) {
+    return {
+      left: deg(Math.atan((p[8] - 1) / p[0])),
+      right: deg(Math.atan((p[8] + 1) / p[0])),
+      down: deg(Math.atan((p[9] - 1) / p[5])),
+      up: deg(Math.atan((p[9] + 1) / p[5])),
+    };
+  }
+
+  async function measure(device) {
+    const session = await navigator.xr.requestSession('immersive-vr');
+    const canvas = document.querySelector('#c');
+    const gl = canvas.getContext('webgl2', { xrCompatible: true });
+    const nativeScale = XRWebGLLayer.getNativeFramebufferScaleFactor(session);
+    const layer = new XRWebGLLayer(session, gl, { framebufferScaleFactor: nativeScale || 1 });
+    session.updateRenderState({ baseLayer: layer });
+    const space = await session.requestReferenceSpace('viewer');
+    const samples = [];
+    await new Promise((resolve, reject) => {
+      session.addEventListener('end', () => reject(new Error(`session ended after ${samples.length} frames`)), { once: true });
+      const tick = (_time, frame) => {
+        try {
+          const pose = frame.getViewerPose(space);
+          if (pose) {
+            samples.push(Array.from(pose.views, view => {
+              const vp = layer.getViewport(view);
+              const { position: t, orientation: q } = view.transform;
+              return {
+                eye: view.eye,
+                frustum: frustum(view.projectionMatrix),
+                projectionMatrix: Array.from(view.projectionMatrix),
+                position: [t.x, t.y, t.z],
+                orientation: [q.x, q.y, q.z, q.w],
+                viewport: { x: vp.x, y: vp.y, width: vp.width, height: vp.height },
+              };
+            }));
+          }
+          gl.bindFramebuffer(gl.FRAMEBUFFER, layer.framebuffer);
+          gl.clearColor(0, 0.6, 0, 1);
+          gl.clear(gl.COLOR_BUFFER_BIT);
+          if (samples.length >= FRAMES) return resolve();
+          session.requestAnimationFrame(tick);
+        } catch (error) { reject(error); }
+      };
+      session.requestAnimationFrame(tick);
+    });
+    const first = samples[0];
+    const last = samples[samples.length - 1];
+    // A frustum that changes while measuring would make one sample misleading.
+    const drift = Math.max(...first.flatMap((view, i) =>
+      view.projectionMatrix.map((value, k) => Math.abs(value - last[i].projectionMatrix[k]))));
+    const views = last.map(view => ({
+      ...view,
+      pixelsPerDegree: view.viewport.height / 2 * view.projectionMatrix[5] * Math.PI / 180,
+    }));
+    const result = {
+      device, measuredAt: new Date().toISOString(), userAgent: navigator.userAgent,
+      frames: samples.length, drift, nativeScale,
+      framebuffer: { width: layer.framebufferWidth, height: layer.framebufferHeight },
+      views,
+    };
+    await session.end();
+    return result;
+  }
+
+  for (const button of document.querySelectorAll('button')) {
+    button.onclick = async () => {
+      try {
+        status('Measuring…');
+        const result = await measure(button.dataset.device);
+        document.querySelector('#result').textContent = JSON.stringify(
+          result.views.map(v => ({ eye: v.eye, frustum: v.frustum, pixelsPerDegree: v.pixelsPerDegree })), null, 1);
+        const response = await fetch('result', {
+          method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(result),
+        });
+        if (!response.ok) throw new Error(`could not send the result: HTTP ${response.status}`);
+        status(`Recorded ${button.dataset.device}. You can take the headset off.`);
+      } catch (error) {
+        status(`Failed: ${error.message}`);
+        console.error(error);
+      }
+    };
+  }
+</script>
