@@ -328,3 +328,100 @@ test('README recorder runs alongside sequence and rejects promptly when it throw
   await expect(page.evaluate(readmeRecorder, 10)).rejects.toThrow(/not a function/);
   expect(Date.now() - started).toBeLessThan(2_000);
 });
+
+test('projectPoint matches pixels the GPU actually drew for a head-locked point', async ({ page, xr }) => {
+  const point = [-0.3, -0.22, -0.5];
+  const projected = await xr.projectPoint(point, { space: 'viewer', size: 0.03 });
+  const drawn = await page.evaluate(point => new Promise((resolve, reject) => {
+    const session = window.session;
+    const program = gl.createProgram();
+    const shader = (type, source) => {
+      const s = gl.createShader(type);
+      gl.shaderSource(s, source);
+      gl.compileShader(s);
+      gl.attachShader(program, s);
+    };
+    shader(gl.VERTEX_SHADER, `#version 300 es
+      uniform mat4 P; uniform vec3 p;
+      void main() { gl_Position = P * vec4(p, 1.0); gl_PointSize = 5.0; }`);
+    shader(gl.FRAGMENT_SHADER, `#version 300 es
+      precision mediump float; out vec4 c;
+      void main() { c = vec4(0.0, 0.0, 1.0, 1.0); }`);
+    gl.linkProgram(program);
+    session.requestReferenceSpace('viewer').then(space => {
+      session.requestAnimationFrame((_time, frame) => {
+        try {
+          const view = frame.getViewerPose(space).views.find(v => session.renderState.baseLayer.getViewport(v).width > 0);
+          const vp = session.renderState.baseLayer.getViewport(view);
+          gl.bindFramebuffer(gl.FRAMEBUFFER, session.renderState.baseLayer.framebuffer);
+          gl.viewport(vp.x, vp.y, vp.width, vp.height);
+          gl.disable(gl.DEPTH_TEST);
+          gl.useProgram(program);
+          gl.uniformMatrix4fv(gl.getUniformLocation(program, 'P'), false, view.projectionMatrix);
+          gl.uniform3fv(gl.getUniformLocation(program, 'p'), point);
+          gl.drawArrays(gl.POINTS, 0, 1);
+          const { width, height } = gl.canvas;
+          const pixels = new Uint8Array(width * height * 4);
+          gl.readPixels(0, 0, width, height, gl.RGBA, gl.UNSIGNED_BYTE, pixels);
+          let sx = 0, sy = 0, n = 0;
+          for (let y = 0; y < height; y++) for (let x = 0; x < width; x++) {
+            const i = (y * width + x) * 4;
+            if (pixels[i + 2] > 200 && pixels[i] < 50) { sx += x + 0.5; sy += height - y - 0.5; n++; }
+          }
+          resolve({ n, x: sx / n, y: sy / n });
+        } catch (error) { reject(error); }
+      });
+    }, reject);
+  }), point);
+  expect(drawn.n).toBeGreaterThan(0);
+  expect(Math.abs(drawn.x - projected.pixel[0])).toBeLessThan(1.5);
+  expect(Math.abs(drawn.y - projected.pixel[1])).toBeLessThan(1.5);
+});
+
+test('projectPoint reports head-locked angles, size and a device field of view', async ({ xr }) => {
+  // A 3 cm head-locked icon, low and to the left.
+  const icon = await xr.projectPoint([-0.3, -0.22, -0.5], { space: 'viewer', size: 0.03, device: 'quest3s' });
+  expect(icon.angles.horizontal).toBeCloseTo(-30.96, 2);
+  expect(icon.angles.vertical).toBeCloseTo(-23.75, 2);
+  expect(icon.degreesFromCenter).toBeCloseTo(36.65, 2);
+  expect(icon.angularSize).toBeCloseTo(2.76, 2);
+  expect(icon.device.apparentPixels).toBeCloseTo(55.2, 0);
+  expect(icon.device.nominal).toBe(true);
+  // Each eye sees it at a different angle: farther in the right eye, on its nasal side.
+  expect(icon.device.left.horizontal).toBeCloseTo(-28.2, 0);
+  expect(icon.device.right.horizontal).toBeCloseTo(-33.5, 0);
+  expect(icon.device.right.margin).toBeLessThan(icon.device.left.margin);
+  expect(icon.device.inBothEyes).toBe(true);
+});
+
+test('the emulator frustum is not a headset field of view', async ({ xr }) => {
+  // 55° to the side: inside a 16:9 canvas with a 90° vertical fov, outside a Quest 3S.
+  const side = [Math.tan(55 * Math.PI / 180), 0, -1];
+  const seen = await xr.projectPoint(side, { space: 'viewer', device: 'quest3s' });
+  expect(seen.inView).toBe(true);
+  expect(seen.device.inBothEyes).toBe(false);
+  // Measured frustums are passed as a spec; the right eye mirrors outer and inner.
+  const measured = { fov: { outer: 50, inner: 30, up: 40, down: 50 }, pixelsPerDegree: 20, ipd: 0 };
+  const left = await xr.projectPoint([-Math.tan(40 * Math.PI / 180), 0, -1], { space: 'viewer', device: measured });
+  expect(left.device.nominal).toBe(false);
+  expect(left.device.left.inView).toBe(true);
+  expect(left.device.right.inView).toBe(false);
+  await expect(xr.projectPoint([0, 0, -1], { device: 'quest9' })).rejects.toThrow(/unknown device.*quest3s/);
+});
+
+test('tracking and viewer spaces agree for the same head-relative point', async ({ xr }) => {
+  await xr.setHeadPose({ position: [1, 1.5, 2], euler: [0, Math.PI / 2, 0] });
+  await xr.waitForFrames(2);
+  // Yawed 90° left, so the view axis (-Z) points along world -X.
+  const tracking = await xr.projectPoint([0, 1.5, 2]);
+  const viewer = await xr.projectPoint([0, 0, -1], { space: 'viewer' });
+  tracking.ndc.slice(0, 2).forEach((c, i) => expect(c).toBeCloseTo(viewer.ndc[i], 5));
+  expect(tracking.distance).toBeCloseTo(1, 5);
+});
+
+test('a behind-the-head point is never in a device view', async ({ xr }) => {
+  const behind = await xr.projectPoint([0, 0, 1], { space: 'viewer', device: 'quest3' });
+  expect(behind.behind).toBe(true);
+  expect(behind.device.inBothEyes).toBe(false);
+  expect(behind.device.left.margin).toBe(-Infinity);
+});

@@ -96,7 +96,7 @@ extensions may differ from a hardware GPU.
 - `xr.sequence(steps, { sessionId?, timeout? })` — a timed input script across both hands; see below.
 - `xr.disconnect(hand)` / `xr.reconnect(hand)` — controller sleep or tracking loss; resolves after the session's input sources changed.
 - `xr.haptics(hand?, { after? })` / `xr.hapticsCursor()` — haptic pulses the app requested: `[{ sequence, hand, actuator, value, duration, t }]`.
-- `xr.projectPoint(point, { eye? })` — where a tracking-space point lands in the view; see below.
+- `xr.projectPoint(point, { eye?, space?, size?, device? })` — where a point lands in the view, in degrees, and in a headset's field of view; see below.
 - `xr.diagnostics({ canvas?, timeout? })` — runtime, current session, render state, input sources, selected canvas and GPU; see below.
 - `xr.screenshot(path, { canvas?, timeout?, metadata? })` — PNG canvas capture; see below.
 - `xr.runtimeInstalled()` — whether the emulated device is installed.
@@ -365,26 +365,58 @@ await expect.poll(async () => (await xr.haptics('right', { after: before })).len
 
 Apps often schedule a second pulse with a timer; poll instead of reading once.
 
-### How big things look
+### Will people be able to read it?
 
-The emulator renders a 90° vertical field of view into your viewport: at
-960 × 540 that is about 4.7 px per degree at the centre, while a Quest 3 shows
-roughly 25 px per degree. Judge legibility in **degrees**, not emulator pixels:
+A label can look fine in an emulator screenshot and still be hard to see on a
+headset. Three things differ:
+
+- **The emulator's frustum is not a headset's.** IWER uses a 90° vertical field
+  of view and takes the horizontal one from the canvas aspect ratio, so a 16:9
+  canvas shows about 121° across. Quest 3S is specified at 96° × 90°, Quest 3 at
+  110° × 96°. `inView` only means "inside the emulator's frustum".
+- **Pixels are not comparable.** 960 × 540 gives about 4.7 px per degree at the
+  centre; Quest 3S is specified at about 20 and Quest 3 at about 25.
+- **Each eye sees a different angle.** Off-centre items sit farther out in one eye.
+
+So check head-locked UI in degrees, against a device:
 
 ```js
-const label = await xr.projectPoint([0, 1.5, -1]);
-// { eye, ndc: [x, y, z], inView, behind, pixel: [x, y] | null,
-//   degreesFromCenter, pixelsPerDegree, viewport }
-expect(label.inView).toBe(true);
-expect(label.degreesFromCenter).toBeLessThan(25);
-// Text height in degrees: project its top and bottom and compare the angles,
-// or divide its pixel height by pixelsPerDegree.
+// A head-locked 3 cm icon, low and to the left. space: 'viewer' = relative to the head.
+const icon = await xr.projectPoint([-0.3, -0.22, -0.5], {
+  space: 'viewer', size: 0.03, device: 'quest3s',
+});
+icon.angles;                // { horizontal: -30.96, vertical: -23.75 }
+icon.degreesFromCenter;     // 36.65
+icon.angularSize;           // 2.76
+icon.inView;                // true, in the emulator only
+icon.device.right;          // { horizontal: -33.5, vertical: -23.75, inView: true, margin: 14.5 }
+icon.device.inBothEyes;     // true
+icon.device.apparentPixels; // 55
+expect(Math.abs(icon.angles.horizontal)).toBeLessThan(20); // your own limit: fails here
 ```
 
-The point is in tracking coordinates. Projection uses one XR frame's viewer
-pose and projection matrix; `pixel` is in canvas pixels with a top-left origin
-and is `null` without a base-layer viewport (for example, with projection
-layers). `eye` defaults to the first eye with a non-empty viewport.
+`margin` is the distance in degrees to the nearest edge of that eye's field of
+view (negative outside). Being inside the field of view does not make something
+comfortable to read: the package reports geometry and sets **no comfort
+threshold**. Choose your own limit and pin it in a test, ideally after checking
+on a headset once. Lens sharpness away from the centre is not modelled.
+
+The built-in `quest3s` and `quest3` entries in `XR_DEVICE_SPECS` are **published
+totals split evenly** (`device.nominal: true`). Real per-eye frustums are
+asymmetric, usually narrower on the nasal side. If an item is close to an edge,
+pass a measured spec, in degrees, with `outer`/`inner` as seen from the left eye
+(mirrored for the right):
+
+```js
+const device = { fov: { outer: 50, inner: 40, up: 42, down: 50 }, pixelsPerDegree: 20, ipd: 0.063 };
+await xr.projectPoint(point, { space: 'viewer', size: 0.03, device });
+```
+
+Without `space: 'viewer'`, the point is in tracking coordinates. Projection uses
+one XR frame's viewer pose and projection matrix. `pixel` is in canvas pixels
+with a top-left origin and is `null` without a base-layer viewport (for example,
+with projection layers). `eye` defaults to the first eye with a non-empty
+viewport. `size` assumes the object faces the viewer.
 
 ### Mono and stereo capture dimensions
 

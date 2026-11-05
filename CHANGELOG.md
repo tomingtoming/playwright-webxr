@@ -1,5 +1,16 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- `projectPoint(point, { space: 'viewer' })` projects head-locked points. Results now include `angles` (frustum-aligned horizontal and vertical degrees) and `distance`; `size` adds `angularSize`.
+- `projectPoint(point, { device })` adds each eye's angles, `inView` and `margin` for a headset, plus `inBothEyes` and `apparentPixels`. `XR_DEVICE_SPECS` provides nominal `quest3s` and `quest3`; pass a measured spec for asymmetric frustums. No comfort threshold is built in.
+
+### Documentation
+
+- `inView` refers to the emulator's frustum, which follows the canvas aspect ratio (about 121° wide at 16:9), and does not predict visibility on a headset.
+
 ## 0.5.1 — 2026-10-29
 
 ### Added

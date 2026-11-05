@@ -31,7 +31,7 @@ test('grab and move', async ({ page, xr }) => {
 - Thumbstick: `setAxes(hand, x, y)` (immediate, stays), `holdAxes(hand, x, y, { ms?, frames?, release? })`, `flick(hand, 'left' | 'right' | 'up' | 'down')` (`up` is y = -1).
 - Scripts: `sequence(steps, { sessionId?, timeout? })` with steps `{ button: [hand, id, value] }`, `{ axes: [hand, x, y], id? }`, `{ pose: hand, position?, quaternion? }`, `{ connected: [hand, boolean] }`, `{ frames: n, ms? }`, `{ wait: ms }`.
 - Devices: `disconnect(hand)`, `reconnect(hand)`, `haptics(hand?, { after? })`, `hapticsCursor()`.
-- Observation: `diagnostics({ canvas?, timeout? })`, `screenshot(path, { canvas?, timeout?, metadata? })`, `projectPoint(point, { eye? })` returns `{ ndc, inView, behind, pixel, degreesFromCenter, pixelsPerDegree, viewport }`.
+- Observation: `diagnostics({ canvas?, timeout? })`, `screenshot(path, { canvas?, timeout?, metadata? })`, `projectPoint(point, { eye?, space?: 'tracking' | 'viewer', size?, device? })` returns `{ ndc, inView, behind, pixel, angles, degreesFromCenter, distance, angularSize?, pixelsPerDegree, viewport, device? }`. `XR_DEVICE_SPECS` is exported with `quest3s` and `quest3`.
 - Options via `test.use()`: `xrDeviceName` (default `'metaQuest3'`), `xrStereoEnabled` (default `false`), `xrIpd`.
 - Helper: `import { aimQuaternion } from 'playwright-webxr/examples/aim-controller'` aims a target ray from one tracking-space point at another.
 
@@ -44,6 +44,6 @@ test('grab and move', async ({ page, xr }) => {
 - Read app state in one `page.evaluate()` per snapshot. Several evaluations can straddle XR frames.
 - A recorder running concurrently with `sequence()` must catch exceptions inside its XR frame callback and reject. IWER only logs them, so the promise otherwise never settles and the test hangs until its timeout.
 - Pulses are often sent on timers: `await expect.poll(async () => (await xr.haptics('right', { after })).length).toBe(n)`.
-- Judge legibility in degrees with `projectPoint()`. The emulator shows about 4.7 px/degree at 960×540; a Quest 3 shows about 25.
+- Judge head-locked UI in degrees with `projectPoint(p, { space: 'viewer', size, device: 'quest3s' })`. `inView` means the emulator's frustum only, which follows the canvas aspect ratio (about 121° wide at 16:9, against 96° on Quest 3S). Check `device.left`, `device.right` and `angles`. The built-in specs are nominal, symmetric totals; pass a measured spec near an edge. The package sets no comfort threshold: choose one and pin it in a test. Do not judge legibility from emulator pixels (about 4.7 px/degree at 960×540, against about 20 on Quest 3S).
 - `xr.screenshot()` captures the canvas only; composition layers may not appear. A green run proves the app agrees with the WebXR spec as IWER reads it, not with a specific headset.
 - Do not install from a `file:` link or `npm link`: `@playwright/test` loads twice ("did not expect test() to be called here"). Install an `npm pack` tarball.
