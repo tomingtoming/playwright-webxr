@@ -9,6 +9,7 @@ const output = process.argv[2];
 if (!output) throw new Error('usage: server.mjs <results.jsonl>');
 const token = process.env.FOV_PROBE_TOKEN ?? randomBytes(12).toString('hex');
 const page = await readFile(new URL('./index.html', import.meta.url));
+const edgesPage = await readFile(new URL('./edges.html', import.meta.url));
 const MAX_BODY = 256 * 1024;
 
 const server = createServer((request, response) => {
@@ -18,6 +19,7 @@ const server = createServer((request, response) => {
   };
   const { pathname } = new URL(request.url, 'http://probe');
   if (request.method === 'GET' && pathname === `/${token}/`) return send(200, page, 'text/html; charset=utf-8');
+  if (request.method === 'GET' && pathname === `/${token}/edges`) return send(200, edgesPage, 'text/html; charset=utf-8');
   if (request.method !== 'POST' || pathname !== `/${token}/result`) return send(404, 'not found');
   const chunks = [];
   let size = 0;
