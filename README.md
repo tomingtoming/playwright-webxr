@@ -396,11 +396,12 @@ icon.device.apparentPixels; // 37, at the default framebuffer scale
 expect(Math.abs(icon.angles.horizontal)).toBeLessThan(20); // your own limit: fails here
 ```
 
-`margin` is the distance in degrees to the nearest edge of that eye's field of
-view (negative outside). Being inside the field of view does not make something
-comfortable to read: the package reports geometry and sets **no comfort
-threshold**. Choose your own limit and pin it in a test, ideally after checking
-on a headset once. Lens sharpness away from the centre is not modelled.
+`margin` is the distance in degrees to the nearest edge of that eye's **render
+frustum** (negative outside), not to the edge of what a person can see. Being
+inside it does not make something visible, let alone comfortable to read: the
+package reports geometry and sets **no comfort threshold**. Choose your own
+limit and pin it in a test, ideally after checking on a headset once. Lens
+sharpness away from the centre is not modelled.
 
 `XR_DEVICE_SPECS` holds frustums measured with `scripts/device-fov` on one unit
 of each headset (2026-11-05, Meta Quest Browser 154). Values are degrees from
@@ -413,11 +414,32 @@ the left eye's point of view; the right eye mirrors them.
 | `quest3s` | 63 mm stop | 49 | 45 | 48 | 50 | 13.34 |
 | `quest3s68` | 68 mm stop | 43 | 45 | 48 | 50 | 13.34 |
 
-These are the frustums the browser gives the app, not the area a person actually
-sees, which also depends on the lenses and the fit. They may change with browser
-or OS updates. For another device, or to re-check, run
-`node scripts/device-fov/server.mjs results.jsonl`, open it on the headset over
-HTTPS and pass your own spec (`pixelsPerDegree` should match your framebuffer scale):
+These are the frustums the browser gives the app, **not the area a person sees**.
+On a Quest 3, one person checked the same frustum with a chart of red edge lines
+and degree marks. The outermost **readable** marks were well inside it:
+
+| Quest 3, on the axes through each eye's centre | Up | Down | Outer | Inner |
+| --- | --- | --- | --- | --- |
+| Render frustum | 44 | 55 | 54 | 40 |
+| Outermost readable mark, left eye | 30 | 40 | 45 | 35 |
+| Outermost readable mark, right eye | 30 | 50 | 40 | 35 |
+
+That is one person, one fit and 5° marks. Something was still visible a little
+beyond the marks vertically, and the outer side bulged slightly below the axis,
+so the visible area is not a rectangle and diagonals were not measured. Do not
+use these numbers as limits for everyone; treat them as evidence that an item a
+few degrees inside the frustum may be unreadable. Quest 3S was not checked this
+way.
+
+The specs may change with browser or OS updates. On Quest 3S, the projection
+matrix differed slightly between the first and last of 120 sampled frames (by
+about 0.1, for an unknown reason); the table uses the last frame, whose angles
+were whole degrees. Quest 3 showed no difference.
+
+To measure another device, run `node scripts/device-fov/server.mjs results.jsonl`,
+expose it over HTTPS and open the printed path on the headset; add `edges` to the
+path for the chart. Pass your own spec (`pixelsPerDegree` should match your
+framebuffer scale):
 
 ```js
 const device = { fov: { outer: 50, inner: 40, up: 42, down: 50 }, pixelsPerDegree: 13, ipd: 0.063 };

@@ -19,8 +19,8 @@ import { composePose, invertPose, poseFromMatrix, quatMultiply, rotateVector, tr
 
 const require = createRequire(import.meta.url);
 
-// WebXR frustums measured with scripts/device-fov (one unit each, 2026-11-05,
-// Meta Quest Browser 154). pixelsPerDegree is what a default-scale XRWebGLLayer
+// WebXR render frustums measured with scripts/device-fov (one unit each, 2026-11-05,
+// Meta Quest Browser 154), not the area a person sees. pixelsPerDegree is what a default-scale XRWebGLLayer
 // renders at the view centre; panelPixelsPerDegree is the published display figure.
 // Quest 3 did not change with IPD (58 and 69 mm). Quest 3S changes per lens stop,
 // so quest3s (the 63 mm stop) has siblings for the other two. Pass your own spec
@@ -473,7 +473,7 @@ export class XRHandle {
    * angles and pixels per degree at the view centre. With size (metres, for an
    * object facing the viewer) adds angularSize in degrees. With device (a name
    * from XR_DEVICE_SPECS or your own spec) adds where the point falls in that
-   * headset's per-eye field of view; the emulator's frustum follows the canvas
+   * headset's per-eye render frustum; the emulator's frustum follows the canvas
    * aspect ratio and says nothing about a real headset.
    */
   async projectPoint(point, { eye, space = 'tracking', size, device, timeout = 2_000 } = {}) {
