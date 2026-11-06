@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.7.0 — 2026-11-07
 
 ### Added
 
@@ -13,6 +13,14 @@
 ### Changed
 
 - During a live session, `screenshot(..., { metadata: true })` reads the pixels in an XR frame callback instead of a window animation frame. Without `metadata`, capture is unchanged.
+
+### Upgrade
+
+```sh
+npm install -D playwright-webxr@^0.7.0
+```
+
+Existing `^0.6.x` ranges do not select this release. Existing metadata fields are unchanged.
 
 ## 0.6.0 — 2026-11-07
 
