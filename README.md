@@ -86,6 +86,7 @@ extensions may differ from a hardware GPU.
 - `xr.sessionMode()` — current session's requested mode, or `null` before entry/after end. The fixture associates `requestSession(mode)` with its returned session; it does not rely on a nonstandard `XRSession.mode` property.
 - `xr.sessionLog()` / `xr.sessionCursor()` / `xr.waitForSessionEvent(event, options?)` — lifecycle history and scoped waits; see below.
 - `xr.setHeadPose({ position, euler, quaternion })` — headset position in meters and XYZ Euler angles in radians, or a quaternion.
+- `xr.headPose()` — current headset `{ position, quaternion }` in tracking space.
 - `xr.setControllerPose(hand, { position, quaternion })` — place the controller's **target ray**.
 - `xr.setGripPose(hand, { position, quaternion? })` / `xr.controllerPose(hand)` — place or read the **grip** (the point a hand holds); see below.
 - `xr.pressButton(hand, id, { holdMs?, frames? })` — press and release. The press lasts at least `holdMs` (default 120 ms) **and** `frames` XR frames (default 2); the release is confirmed in a further frame.
@@ -586,6 +587,49 @@ from `XR_DEVICE_SPECS`. It does not change the rendering.
 session, or when no XR frame arrives within half of `timeout`; the image is then
 captured from a window frame. A missing viewport is `null` with `viewportReason`,
 and a missing grip is `null` with `gripReason`.
+
+### Photographing a target from several viewpoints
+
+One frontal screenshot of a cut can show its edge and hide its interior. The
+packaged [`inspect-views`](examples/inspect-views.mjs) example photographs a shared
+target from named viewpoints, attaches each image with its metadata, and restores
+the starting head pose even if a view fails:
+
+```js
+import { captureViews } from 'playwright-webxr/examples/inspect-views';
+
+const oblique = 35 * Math.PI / 180;
+const shots = await captureViews(xr, testInfo, [
+  { name: 'front', target: cut, distance: 1.2 },
+  { name: 'left-oblique', target: cut, distance: 1.2, yaw: -oblique },
+  { name: 'right-oblique', target: cut, distance: 1.2, yaw: oblique },
+  { name: 'close-up', target: detail, distance: 0.45 },
+  { name: 'full-panel', target: panelCentre, distance: 1.1 },
+], {
+  canvas: '#world',
+  // XR frames do not prove your app has settled; assert that here.
+  ready: () => expect(page.getByTestId('status')).toHaveText('ready'),
+});
+// shots['left-oblique'] is { pose, capture }; left-oblique.png and .json are in the report.
+```
+
+Each view takes `target`, `distance`, `yaw`, `pitch`, `roll`, `up` and `front`.
+Angles are radians. With the default `up` of `[0, 1, 0]` and `front` of `[0, 0, 1]`,
+positive `yaw` moves the camera towards +X and positive `pitch` moves it above the
+target. Positive `roll` turns the head counter-clockwise around its own +Z, like
+the third value of `setHeadPose({ euler })`, so the image appears rotated clockwise.
+A view looking along `up` is an error; pass a different `up`. `lookAtHeadPose()` is
+exported for your own sequences. It differs from `aimQuaternion()`, which picks the
+shortest rotation and leaves roll undefined.
+
+Targets are in IWER tracking coordinates. If your scene sits on a rig, pass
+`worldToTracking: { position, quaternion }`, the inverse of your rig's
+tracking-to-world transform; `target`, `up` and `front` are then in scene
+coordinates. It is rigid, without scale.
+
+A test can check that a target projects into a view (`xr.projectPoint(target)` in
+`ready`). Whether the chosen views actually show the surfaces you care about is
+judged from the images.
 
 ## Installing from a local checkout
 

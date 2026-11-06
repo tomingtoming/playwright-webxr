@@ -25,7 +25,7 @@ test('grab and move', async ({ page, xr }) => {
 ## API (all on `xr`, all async)
 
 - Session: `enterVR({ button?, force?, timeout? })`, `waitForSession(timeout?)`, `endSession({ sessionId?, timeout? })`, `waitForFrames(count, { sessionId?, timeout? })`, `sessionMode()`, `sessionLog()`, `sessionCursor()`, `waitForSessionEvent(event, { after?, sessionId?, timeout? })`, `runtimeInstalled()`, `settle(ms)` (wall time only).
-- Poses: `setHeadPose({ position?, euler?, quaternion? })`, `setControllerPose(hand, { position?, quaternion? })` (target ray), `setGripPose(hand, { position?, quaternion? })` (the point a hand holds), `controllerPose(hand)` returns `{ targetRay, grip, connected }`.
+- Poses: `setHeadPose({ position?, euler?, quaternion? })`, `setControllerPose(hand, { position?, quaternion? })` (target ray), `setGripPose(hand, { position?, quaternion? })` (the point a hand holds), `controllerPose(hand)` returns `{ targetRay, grip, connected }`. `headPose()` returns `{ position, quaternion }`.
 - Buttons: `pressButton(hand, id, { holdMs?, frames? })`, `hold(hand, id, { value?, frames? })`, `release(hand, id)`. IDs on Quest profiles: `trigger`, `squeeze`, `thumbstick`, `thumbrest`, `a-button`, `b-button` (right), `x-button`, `y-button` (left). Unknown IDs throw.
 - Movement: `drag(hand, { from, to, ms?, steps?, button?, quaternion?, toQuaternion?, space?: 'targetRay' | 'grip', release?, settleFrames? })`.
 - Thumbstick: `setAxes(hand, x, y)` (immediate, stays), `holdAxes(hand, x, y, { ms?, frames?, release? })`, `flick(hand, 'left' | 'right' | 'up' | 'down')` (`up` is y = -1).
@@ -34,6 +34,7 @@ test('grab and move', async ({ page, xr }) => {
 - Observation: `diagnostics({ canvas?, timeout? })`, `screenshot(path, { canvas?, timeout?, metadata?, device? })`, `attachCapture(testInfo, name, { canvas?, timeout?, device? })` (PNG and JSON sidecar, both attached to the report), `projectPoint(point, { eye?, space?: 'tracking' | 'viewer', size?, device? })` returns `{ ndc, inView, behind, pixel, angles, degreesFromCenter, distance, angularSize?, pixelsPerDegree, viewport, device? }`. `XR_DEVICE_SPECS` is exported with measured `quest3`, `quest3s`, `quest3s58` and `quest3s68`.
 - Options via `test.use()`: `xrDeviceName` (default `'metaQuest3'`), `xrStereoEnabled` (default `false`), `xrIpd`.
 - Helper: `import { aimQuaternion } from 'playwright-webxr/examples/aim-controller'` aims a target ray from one tracking-space point at another.
+- Helper: `import { captureViews, lookAtHeadPose } from 'playwright-webxr/examples/inspect-views'` photographs one target from named viewpoints, attaches `<name>.png` and `<name>.json`, and restores the head pose.
 
 ## Rules that prevent the mistakes earlier users made
 

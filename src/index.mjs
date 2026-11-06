@@ -235,6 +235,11 @@ export class XRHandle {
     );
   }
 
+  /** Current headset pose in tracking space: { position, quaternion }. */
+  async headPose() {
+    return (await this.evaluate(readXRState, { views: false })).head;
+  }
+
   /**
    * Move / orient a controller's target ray. hand: 'left' | 'right'.
    * Use setGripPose() to place the grip (the point a hand holds) instead.
