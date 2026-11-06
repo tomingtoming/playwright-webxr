@@ -1,5 +1,26 @@
 # Changelog
 
+## 0.6.0 — 2026-11-07
+
+### Added
+
+- `projectPoint(point, { space: 'viewer' })` projects head-locked points. Results now include `angles` (frustum-aligned horizontal and vertical degrees) and `distance`; `size` adds `angularSize`.
+- `projectPoint(point, { device })` adds each eye's angles, `inView` and `margin` for a headset, plus `inBothEyes` and `apparentPixels`. `XR_DEVICE_SPECS` provides `quest3`, `quest3s`, `quest3s58` and `quest3s68`: render frustums measured on real headsets. Quest 3S frustums change per lens stop; Quest 3 did not at 58 and 69 mm. Pass your own spec for other devices. No comfort threshold is built in.
+- `scripts/device-fov` (not in the npm package) records a headset's per-eye frustums and shows a chart for comparing them with what a person can read.
+
+### Documentation
+
+- `inView` refers to the emulator's frustum, which follows the canvas aspect ratio (about 121° wide at 16:9), and does not predict visibility on a headset.
+- Render frustums are not visible areas. In one Quest 3 check, the outermost readable marks were 5 to 15 degrees inside them.
+
+### Upgrade
+
+```sh
+npm install -D playwright-webxr@^0.6.0
+```
+
+Existing `^0.5.x` ranges do not select this release. Existing fields of `projectPoint()` are unchanged.
+
 ## 0.5.1 — 2026-10-29
 
 ### Added

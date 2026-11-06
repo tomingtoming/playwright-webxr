@@ -96,7 +96,7 @@ extensions may differ from a hardware GPU.
 - `xr.sequence(steps, { sessionId?, timeout? })` — a timed input script across both hands; see below.
 - `xr.disconnect(hand)` / `xr.reconnect(hand)` — controller sleep or tracking loss; resolves after the session's input sources changed.
 - `xr.haptics(hand?, { after? })` / `xr.hapticsCursor()` — haptic pulses the app requested: `[{ sequence, hand, actuator, value, duration, t }]`.
-- `xr.projectPoint(point, { eye? })` — where a tracking-space point lands in the view; see below.
+- `xr.projectPoint(point, { eye?, space?, size?, device? })` — where a point lands in the view, in degrees, and in a headset's field of view; see below.
 - `xr.diagnostics({ canvas?, timeout? })` — runtime, current session, render state, input sources, selected canvas and GPU; see below.
 - `xr.screenshot(path, { canvas?, timeout?, metadata? })` — PNG canvas capture; see below.
 - `xr.runtimeInstalled()` — whether the emulated device is installed.
@@ -365,26 +365,92 @@ await expect.poll(async () => (await xr.haptics('right', { after: before })).len
 
 Apps often schedule a second pulse with a timer; poll instead of reading once.
 
-### How big things look
+### Will people be able to read it?
 
-The emulator renders a 90° vertical field of view into your viewport: at
-960 × 540 that is about 4.7 px per degree at the centre, while a Quest 3 shows
-roughly 25 px per degree. Judge legibility in **degrees**, not emulator pixels:
+A label can look fine in an emulator screenshot and still be hard to see on a
+headset. Three things differ:
+
+- **The emulator's frustum is not a headset's.** IWER uses a 90° vertical field
+  of view and takes the horizontal one from the canvas aspect ratio, so a 16:9
+  canvas shows about 121° across. A Quest 3 eye was measured at 94° × 99°.
+  `inView` only means "inside the emulator's frustum".
+- **Pixels are not comparable, and spec sheets do not describe WebXR.** 960 × 540
+  gives about 4.7 px per degree at the centre. Quest 3 is specified at 25, but
+  Meta Quest Browser's default framebuffer renders about 12.8 there.
+- **Each eye sees a different angle**, and the frustums are asymmetric.
+
+So check head-locked UI in degrees, against a device:
 
 ```js
-const label = await xr.projectPoint([0, 1.5, -1]);
-// { eye, ndc: [x, y, z], inView, behind, pixel: [x, y] | null,
-//   degreesFromCenter, pixelsPerDegree, viewport }
-expect(label.inView).toBe(true);
-expect(label.degreesFromCenter).toBeLessThan(25);
-// Text height in degrees: project its top and bottom and compare the angles,
-// or divide its pixel height by pixelsPerDegree.
+// A head-locked 3 cm icon, low and to the left. space: 'viewer' = relative to the head.
+const icon = await xr.projectPoint([-0.3, -0.22, -0.5], {
+  space: 'viewer', size: 0.03, device: 'quest3s',
+});
+icon.angles;                // { horizontal: -30.96, vertical: -23.75 }
+icon.degreesFromCenter;     // 36.65
+icon.angularSize;           // 2.76
+icon.inView;                // true, in the emulator only
+icon.device.right;          // { horizontal: -33.5, vertical: -23.75, inView: true, margin: 11.5 }
+icon.device.inBothEyes;     // true
+icon.device.apparentPixels; // 37, at the default framebuffer scale
+expect(Math.abs(icon.angles.horizontal)).toBeLessThan(20); // your own limit: fails here
 ```
 
-The point is in tracking coordinates. Projection uses one XR frame's viewer
-pose and projection matrix; `pixel` is in canvas pixels with a top-left origin
-and is `null` without a base-layer viewport (for example, with projection
-layers). `eye` defaults to the first eye with a non-empty viewport.
+`margin` is the distance in degrees to the nearest edge of that eye's **render
+frustum** (negative outside), not to the edge of what a person can see. Being
+inside it does not make something visible, let alone comfortable to read: the
+package reports geometry and sets **no comfort threshold**. Choose your own
+limit and pin it in a test, ideally after checking on a headset once. Lens
+sharpness away from the centre is not modelled.
+
+`XR_DEVICE_SPECS` holds frustums measured with `scripts/device-fov` on one unit
+of each headset (2026-11-05, Meta Quest Browser 154). Values are degrees from
+the left eye's point of view; the right eye mirrors them.
+
+| Device | Lens setting | Outer | Inner | Up | Down | Rendered px/° at centre |
+| --- | --- | --- | --- | --- | --- | --- |
+| `quest3` | 58 and 69 mm gave the same result | 54 | 40 | 44 | 55 | 12.83 |
+| `quest3s58` | 58 mm stop | 52 | 42 | 48 | 50 | 13.34 |
+| `quest3s` | 63 mm stop | 49 | 45 | 48 | 50 | 13.34 |
+| `quest3s68` | 68 mm stop | 43 | 45 | 48 | 50 | 13.34 |
+
+These are the frustums the browser gives the app, **not the area a person sees**.
+On a Quest 3, one person checked the same frustum with a chart of red edge lines
+and degree marks. The outermost **readable** marks were well inside it:
+
+| Quest 3, on the axes through each eye's centre | Up | Down | Outer | Inner |
+| --- | --- | --- | --- | --- |
+| Render frustum | 44 | 55 | 54 | 40 |
+| Outermost readable mark, left eye | 30 | 40 | 45 | 35 |
+| Outermost readable mark, right eye | 30 | 50 | 40 | 35 |
+
+That is one person, one fit and 5° marks. Something was still visible a little
+beyond the marks vertically, and the outer side bulged slightly below the axis,
+so the visible area is not a rectangle and diagonals were not measured. Do not
+use these numbers as limits for everyone; treat them as evidence that an item a
+few degrees inside the frustum may be unreadable. Quest 3S was not checked this
+way.
+
+The specs may change with browser or OS updates. On Quest 3S, the projection
+matrix differed slightly between the first and last of 120 sampled frames (by
+about 0.1, for an unknown reason); the table uses the last frame, whose angles
+were whole degrees. Quest 3 showed no difference.
+
+To measure another device, run `node scripts/device-fov/server.mjs results.jsonl`,
+expose it over HTTPS and open the printed path on the headset; add `edges` to the
+path for the chart. Pass your own spec (`pixelsPerDegree` should match your
+framebuffer scale):
+
+```js
+const device = { fov: { outer: 50, inner: 40, up: 42, down: 50 }, pixelsPerDegree: 13, ipd: 0.063 };
+await xr.projectPoint(point, { space: 'viewer', size: 0.03, device });
+```
+
+Without `space: 'viewer'`, the point is in tracking coordinates. Projection uses
+one XR frame's viewer pose and projection matrix. `pixel` is in canvas pixels
+with a top-left origin and is `null` without a base-layer viewport (for example,
+with projection layers). `eye` defaults to the first eye with a non-empty
+viewport. `size` assumes the object faces the viewer.
 
 ### Mono and stereo capture dimensions
 

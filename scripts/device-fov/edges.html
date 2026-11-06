@@ -1,0 +1,142 @@
+<!doctype html>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Headset visible-edge check</title>
+<style>
+  body { font: 20px system-ui, sans-serif; margin: 2rem; max-width: 40rem; }
+  button { font: inherit; padding: 1rem 2rem; }
+</style>
+<h1>Visible-edge check</h1>
+<p>Close one eye. A red frame marks the exact edge of what the browser renders for that eye. Numbers are degrees from that eye's centre. Note whether each side of the red frame is visible, and otherwise the outermost number you can see. Repeat with the other eye. Pull the trigger to leave.</p>
+<p><button id="enter">Enter VR</button></p>
+<p id="status">Ready.</p>
+<canvas id="c" hidden></canvas>
+<script>
+  const STEP = 5;
+  const status = text => { document.querySelector('#status').textContent = text; };
+  const rad = degrees => degrees * Math.PI / 180;
+
+  // Column-major perspective matrix to tangents of the four frustum edges.
+  function edges(p) {
+    return { left: (p[8] - 1) / p[0], right: (p[8] + 1) / p[0], down: (p[9] - 1) / p[5], up: (p[9] + 1) / p[5] };
+  }
+
+  // Draws one eye's chart. Returns the tick layout in viewport pixels (top-left origin).
+  function drawChart(eye, frustum, width, height) {
+    const canvas = document.createElement('canvas');
+    canvas.width = width;
+    canvas.height = height;
+    const c = canvas.getContext('2d');
+    const toX = tan => (tan - frustum.left) / (frustum.right - frustum.left) * width;
+    const toY = tan => (frustum.up - tan) / (frustum.up - frustum.down) * height;
+    const cx = toX(0), cy = toY(0);
+    c.fillStyle = '#000';
+    c.fillRect(0, 0, width, height);
+    c.strokeStyle = '#666';
+    c.lineWidth = 2;
+    c.beginPath();
+    c.moveTo(0, cy); c.lineTo(width, cy);
+    c.moveTo(cx, 0); c.lineTo(cx, height);
+    c.stroke();
+    c.fillStyle = '#fff';
+    c.font = 'bold 44px system-ui, sans-serif';
+    c.textAlign = 'center';
+    c.textBaseline = 'middle';
+    const ticks = [];
+    const tick = (axis, degrees, x, y) => {
+      ticks.push({ axis, degrees, x, y });
+      c.fillStyle = '#fff';
+      if (axis === 'horizontal') {
+        c.fillRect(x - 3, y - 16, 6, 32);
+        c.fillText(String(Math.abs(degrees)), x, y + (Math.abs(degrees) % 10 ? 48 : -48));
+      } else {
+        c.fillRect(x - 16, y - 3, 32, 6);
+        c.fillText(String(Math.abs(degrees)), x + (Math.abs(degrees) % 10 ? 64 : -64), y);
+      }
+    };
+    for (let d = STEP; d < 90; d += STEP) {
+      const t = Math.tan(rad(d));
+      if (t <= frustum.right) tick('horizontal', d, toX(t), cy);
+      if (-t >= frustum.left) tick('horizontal', -d, toX(-t), cy);
+      if (t <= frustum.up) tick('vertical', d, cx, toY(t));
+      if (-t >= frustum.down) tick('vertical', -d, cx, toY(-t));
+    }
+    c.fillStyle = eye === 'right' ? '#ffd54a' : '#4ad5ff';
+    c.font = 'bold 72px system-ui, sans-serif';
+    c.fillText(eye === 'right' ? 'R' : 'L', cx + 70, cy - 70);
+    // Exactly on the render edge, inside the viewport.
+    c.strokeStyle = '#f00';
+    c.lineWidth = 8;
+    c.strokeRect(4, 4, width - 8, height - 8);
+    return { canvas, ticks };
+  }
+
+  async function enter() {
+    const session = await navigator.xr.requestSession('immersive-vr');
+    window.session = session;
+    const canvas = document.querySelector('#c');
+    const gl = canvas.getContext('webgl2', { xrCompatible: true, preserveDrawingBuffer: true });
+    window.gl = gl;
+    const layer = new XRWebGLLayer(session, gl);
+    session.updateRenderState({ baseLayer: layer });
+    const space = await session.requestReferenceSpace('viewer');
+    const compile = (type, source) => {
+      const shader = gl.createShader(type);
+      gl.shaderSource(shader, source);
+      gl.compileShader(shader);
+      return shader;
+    };
+    const program = gl.createProgram();
+    gl.attachShader(program, compile(gl.VERTEX_SHADER, `#version 300 es
+      out vec2 uv;
+      void main() {
+        vec2 p = vec2(gl_VertexID & 1, (gl_VertexID >> 1) & 1);
+        uv = vec2(p.x, 1.0 - p.y);
+        gl_Position = vec4(p * 2.0 - 1.0, 0.0, 1.0);
+      }`));
+    gl.attachShader(program, compile(gl.FRAGMENT_SHADER, `#version 300 es
+      precision mediump float;
+      in vec2 uv; out vec4 color; uniform sampler2D chart;
+      void main() { color = texture(chart, uv); }`));
+    gl.linkProgram(program);
+    const charts = new Map();
+    window.charts = charts;
+    session.addEventListener('select', () => session.end());
+    session.addEventListener('end', () => status('Left VR. Report what you saw for each eye.'));
+    const render = (_time, frame) => {
+      const pose = frame.getViewerPose(space);
+      gl.bindFramebuffer(gl.FRAMEBUFFER, layer.framebuffer);
+      gl.useProgram(program);
+      for (const view of pose?.views ?? []) {
+        const vp = layer.getViewport(view);
+        if (!vp.width || !vp.height) continue;
+        const key = `${view.eye}:${vp.width}x${vp.height}:${Array.from(view.projectionMatrix).join()}`;
+        let chart = charts.get(view.eye);
+        if (chart?.key !== key) {
+          const drawn = drawChart(view.eye, edges(view.projectionMatrix), vp.width, vp.height);
+          const texture = chart?.texture ?? gl.createTexture();
+          gl.bindTexture(gl.TEXTURE_2D, texture);
+          gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, drawn.canvas);
+          gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+          gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+          gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+          gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+          chart = { key, texture, ticks: drawn.ticks, viewport: { x: vp.x, y: vp.y, width: vp.width, height: vp.height } };
+          charts.set(view.eye, chart);
+        }
+        gl.viewport(vp.x, vp.y, vp.width, vp.height);
+        gl.bindTexture(gl.TEXTURE_2D, chart.texture);
+        gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+      }
+      window.framesDrawn = (window.framesDrawn ?? 0) + 1;
+      session.requestAnimationFrame(render);
+    };
+    session.requestAnimationFrame(render);
+    status('In VR.');
+  }
+
+  document.querySelector('#enter').onclick = () => enter().catch(error => {
+    status(`Failed: ${error.message}`);
+    console.error(error);
+  });
+</script>

@@ -19,6 +19,22 @@ import { composePose, invertPose, poseFromMatrix, quatMultiply, rotateVector, tr
 
 const require = createRequire(import.meta.url);
 
+// WebXR render frustums measured with scripts/device-fov (one unit each, 2026-11-05,
+// Meta Quest Browser 154), not the area a person sees. pixelsPerDegree is what a default-scale XRWebGLLayer
+// renders at the view centre; panelPixelsPerDegree is the published display figure.
+// Quest 3 did not change with IPD (58 and 69 mm). Quest 3S changes per lens stop,
+// so quest3s (the 63 mm stop) has siblings for the other two. Pass your own spec
+// ({ fov: { outer, inner, up, down }, pixelsPerDegree, ipd? }) for other devices.
+const spec = (outer, inner, up, down, pixelsPerDegree, panelPixelsPerDegree, ipd) => Object.freeze({
+  fov: Object.freeze({ outer, inner, up, down }), pixelsPerDegree, panelPixelsPerDegree, ipd,
+});
+export const XR_DEVICE_SPECS = Object.freeze({
+  quest3: spec(54, 40, 44, 55, 12.83, 25, 0.063),
+  quest3s: spec(49, 45, 48, 50, 13.34, 20, 0.063),
+  quest3s58: spec(52, 42, 48, 50, 13.34, 20, 0.058),
+  quest3s68: spec(43, 45, 48, 50, 13.34, 20, 0.068),
+});
+
 const HANDS = ['left', 'right'];
 const FLICK = { left: [-1, 0], right: [1, 0], up: [0, -1], down: [0, 1] };
 
@@ -451,21 +467,28 @@ export class XRHandle {
   }
 
   /**
-   * Project a tracking-space point through one XR frame's view. Returns NDC,
-   * whether it is inside the view frustum, its canvas pixel (top-left origin)
-   * when the base layer viewport is known, the angle from the view axis, and
-   * the pixels per degree at the view centre.
+   * Project a point through one XR frame's view. space: 'tracking' (default) or
+   * 'viewer' (head-locked, relative to the head). Returns NDC, whether it is in
+   * the EMULATOR's frustum, its canvas pixel (top-left origin), frustum-aligned
+   * angles and pixels per degree at the view centre. With size (metres, for an
+   * object facing the viewer) adds angularSize in degrees. With device (a name
+   * from XR_DEVICE_SPECS or your own spec) adds where the point falls in that
+   * headset's per-eye render frustum; the emulator's frustum follows the canvas
+   * aspect ratio and says nothing about a real headset.
    */
-  async projectPoint(point, { eye, timeout = 2_000 } = {}) {
+  async projectPoint(point, { eye, space = 'tracking', size, device, timeout = 2_000 } = {}) {
     checkVector(point, 'point');
     checkTimeout(timeout);
+    if (!['tracking', 'viewer'].includes(space)) throw new Error("projectPoint: space must be 'tracking' or 'viewer'");
+    if (size !== undefined && !(Number.isFinite(size) && size > 0)) throw new Error('projectPoint: size must be a positive number of metres');
+    const spec = device === undefined ? undefined : resolveDeviceSpec(device);
     const state = await this.evaluate(readXRState, { timeout });
     if (!state.views) throw new Error(`projectPoint: ${state.viewsReason}`);
     const view = eye ? state.views.find(v => v.eye === eye)
       : state.views.find(v => v.viewport?.width > 0) ?? state.views[0];
     if (!view) throw new Error(`projectPoint: no ${eye} view (have: ${state.views.map(v => v.eye).join(', ')})`);
-    const eyePose = composePose(state.head, view);
-    const local = composePoseInverseApply(eyePose, point);
+    const eyePose = space === 'viewer' ? view : composePose(state.head, view);
+    const local = applyInverse(eyePose, point);
     const [cx, cy, cz, cw] = transformPoint(view.projectionMatrix, local);
     const ndc = [cx / cw, cy / cw, cz / cw];
     const inView = cw > 0 && ndc.every(c => c >= -1 && c <= 1);
@@ -474,9 +497,19 @@ export class XRHandle {
       vp.x + (ndc[0] + 1) / 2 * vp.width,
       view.canvasHeight - (vp.y + (ndc[1] + 1) / 2 * vp.height),
     ] : null;
-    const degreesFromCenter = Math.acos(Math.max(-1, Math.min(1, -local[2] / Math.hypot(...local)))) * 180 / Math.PI;
+    const distance = Math.hypot(...local);
+    const degreesFromCenter = degrees(Math.acos(Math.max(-1, Math.min(1, -local[2] / distance))));
     const pixelsPerDegree = vp && vp.height > 0 ? vp.height / 2 * view.projectionMatrix[5] * Math.PI / 180 : null;
-    return { eye: view.eye, ndc, inView, behind: cw <= 0, pixel, degreesFromCenter, pixelsPerDegree, viewport: vp };
+    const result = {
+      eye: view.eye, ndc, inView, behind: cw <= 0, pixel, degreesFromCenter, pixelsPerDegree, viewport: vp,
+      space, distance, angles: viewAngles(local),
+    };
+    if (size !== undefined) result.angularSize = degrees(2 * Math.atan2(size / 2, distance));
+    if (spec) {
+      const head = space === 'viewer' ? point : applyInverse(state.head, point);
+      result.device = deviceView(head, spec, result.angularSize);
+    }
+    return result;
   }
 
   /**
@@ -617,10 +650,50 @@ function toStep(step, index) {
   return { type: 'frames', count: 0, minMs: step.wait };
 }
 
-function composePoseInverseApply(pose, point) {
+function applyInverse(pose, point) {
   const inverse = invertPose(pose);
   const rotated = rotateVector(inverse.quaternion, point);
   return rotated.map((c, i) => c + inverse.position[i]);
+}
+
+function degrees(radians) {
+  return radians * 180 / Math.PI;
+}
+
+// Frustum-aligned: comparable with per-eye field-of-view edges. left/down are negative.
+function viewAngles([x, y, z]) {
+  return { horizontal: degrees(Math.atan2(x, -z)), vertical: degrees(Math.atan2(y, -z)) };
+}
+
+function resolveDeviceSpec(device) {
+  const spec = typeof device === 'string' ? XR_DEVICE_SPECS[device] : device;
+  if (!spec) throw new Error(`projectPoint: unknown device ${JSON.stringify(device)} (known: ${Object.keys(XR_DEVICE_SPECS).join(', ')})`);
+  const { fov } = spec;
+  if (!fov || !['outer', 'inner', 'up', 'down'].every(side => fov[side] > 0 && fov[side] < 90)) {
+    throw new Error('projectPoint: device.fov needs outer, inner, up and down in degrees (0 to 90)');
+  }
+  if (!(spec.pixelsPerDegree > 0)) throw new Error('projectPoint: device.pixelsPerDegree must be positive');
+  return { ipd: 0.063, ...spec };
+}
+
+function deviceView([x, y, z], spec, angularSize) {
+  const eye = (offset, outerSign) => {
+    const angles = viewAngles([x - offset, y, z]);
+    const toLeft = outerSign < 0 ? spec.fov.outer : spec.fov.inner;
+    const toRight = outerSign < 0 ? spec.fov.inner : spec.fov.outer;
+    const margin = Math.min(
+      toLeft + angles.horizontal, toRight - angles.horizontal,
+      spec.fov.down + angles.vertical, spec.fov.up - angles.vertical,
+    );
+    return { ...angles, inView: z < 0 && margin >= 0, margin: z < 0 ? margin : -Infinity };
+  };
+  const left = eye(-spec.ipd / 2, -1);
+  const right = eye(spec.ipd / 2, 1);
+  return {
+    left, right,
+    inBothEyes: left.inView && right.inView,
+    apparentPixels: angularSize === undefined ? null : angularSize * spec.pixelsPerDegree,
+  };
 }
 
 function checkSessionId(sessionId) {
