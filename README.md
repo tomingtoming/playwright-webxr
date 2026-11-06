@@ -98,7 +98,8 @@ extensions may differ from a hardware GPU.
 - `xr.haptics(hand?, { after? })` / `xr.hapticsCursor()` — haptic pulses the app requested: `[{ sequence, hand, actuator, value, duration, t }]`.
 - `xr.projectPoint(point, { eye?, space?, size?, device? })` — where a point lands in the view, in degrees, and in a headset's field of view; see below.
 - `xr.diagnostics({ canvas?, timeout? })` — runtime, current session, render state, input sources, selected canvas and GPU; see below.
-- `xr.screenshot(path, { canvas?, timeout?, metadata? })` — PNG canvas capture; see below.
+- `xr.screenshot(path, { canvas?, timeout?, metadata?, device? })` — PNG canvas capture; see below.
+- `xr.attachCapture(testInfo, name, { canvas?, timeout?, device? })` — PNG and JSON sidecar, both attached to the report; see below.
 - `xr.runtimeInstalled()` — whether the emulated device is installed.
 - `xr.settle(ms = 500)` — wait that many milliseconds. It does **not** count frames or guarantee rendering, physics or asset readiness; assert the app state separately.
 
@@ -535,17 +536,56 @@ const capture = await xr.screenshot(path, {
   timeout: 5_000,
   metadata: true,
 });
-// { path, width, height, canvas, sessionId, capture: 'canvas' }
+// { path, width, height, canvas, sessionId, capture: 'canvas', view, viewReason }
 ```
 
-The parent directory must exist. Capture uses `canvas.toDataURL()` inside a
-window animation frame, with errors for missing/empty/tainted canvases and a
-bounded wait if frames stop. Image dimensions are recorded in that same
-callback. It captures the selected canvas only: **composition layers may not
-reach that canvas**. Saving a PNG does not verify layer textures or the final
-headset image. Keep app-specific texture/FBO evidence alongside it when needed.
-Eye cropping is not provided; use actual diagnosed viewports, not an assumed
-half-image split.
+The parent directory must exist. Capture uses `canvas.toDataURL()`, with errors
+for missing/empty/tainted canvases and a bounded wait if frames stop. It captures
+the selected canvas only: **composition layers may not reach that canvas**.
+Saving a PNG does not verify layer textures or the final headset image. Keep
+app-specific texture/FBO evidence alongside it when needed. Eye cropping is not
+provided; use actual diagnosed viewports, not an assumed half-image split.
+
+### Explaining a screenshot
+
+A PNG alone cannot tell you whether a cut-off panel is a layout bug or just where
+the camera was. With `metadata: true`, a capture carries what explains its view.
+`attachCapture()` also saves it as a JSON sidecar and attaches both files to the
+Playwright report:
+
+```js
+test('panel layout', async ({ xr }, testInfo) => {
+  // ...enter VR, set a pose, assert the app is ready...
+  const capture = await xr.attachCapture(testInfo, 'panel', { canvas: '#world', device: 'quest3s' });
+  // Writes panel.png and panel.json in testInfo.outputPath().
+  capture.view.head;            // { position, quaternion }
+  capture.view.views[0].frustum; // { left, right, up, down } in degrees
+});
+```
+
+| `view` field | Meaning |
+| --- | --- |
+| `coordinateSpace` | `'iwer-tracking'`: all poses below, the same as `setHeadPose()` |
+| `sampling`, `frame` | `'same-xr-frame'`; `frame.time` is the XR frame time, `frame.capturedAt` is `performance.now()` |
+| `head`, `controllers.left/right` | Head pose; each controller's `connected`, `targetRay` and `grip` |
+| `stereoEnabled`, `ipd`, `deviceProfile` | Emulator configuration |
+| `projection` | `'emulator'`: the pixels were rendered with the projection below |
+| `views[]` | Each eye's `projectionMatrix`, `frustum`, `viewport` and `fromHead` offset |
+
+**Pose and pixels.** During a live session, metadata captures read the pixels in
+an XR frame callback, alongside that frame's poses. The app's own frame callback
+normally ran earlier in the same frame, so the image shows that pose. An app that
+requests its frame callback later than the capture, or renders outside its XR
+frame callback, can show the previous frame; check with a marker if it matters.
+
+**Emulator and device.** `view.views` is what rendered the image. `device` adds a
+separate `reference` (`{ kind: 'device-reference', device, fov, pixelsPerDegree, note }`)
+from `XR_DEVICE_SPECS`. It does not change the rendering.
+
+**Unavailable values.** `view` is `null` with a `viewReason` when there is no
+session, or when no XR frame arrives within half of `timeout`; the image is then
+captured from a window frame. A missing viewport is `null` with `viewportReason`,
+and a missing grip is `null` with `gripReason`.
 
 ## Installing from a local checkout
 

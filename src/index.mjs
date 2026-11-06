@@ -14,7 +14,7 @@
 import { test as base, expect } from '@playwright/test';
 import { createRequire } from 'node:module';
 import fs from 'node:fs/promises';
-import { installRuntime, readDiagnostics, readXRState, runInputScript, runSessionOperation } from './runtime.mjs';
+import { captureCanvas, installRuntime, readDiagnostics, readXRState, runInputScript, runSessionOperation } from './runtime.mjs';
 import { composePose, invertPose, poseFromMatrix, quatMultiply, rotateVector, transformPoint } from './pose.mjs';
 
 const require = createRequire(import.meta.url);
@@ -538,39 +538,39 @@ export class XRHandle {
    * Screenshot the WebGL canvas via toDataURL (robust where page.screenshot
    * times out on continuously-rendering canvases / software GL).
    */
-  async screenshot(path, { canvas = 'canvas', timeout = 5_000, metadata = false } = {}) {
+  async screenshot(path, { canvas = 'canvas', timeout = 5_000, metadata = false, device } = {}) {
     checkTimeout(timeout);
-    const capture = await this.page.evaluate(({ selector, timeout }) => new Promise((resolve, reject) => {
-      const target = document.querySelector(selector);
-      if (!(target instanceof HTMLCanvasElement)) {
-        reject(new Error(`screenshot: no canvas matches ${selector}`));
-        return;
-      }
-      let frameId;
-      const timer = setTimeout(() => {
-        cancelAnimationFrame(frameId);
-        reject(new Error(`screenshot: timed out waiting for a frame (${selector})`));
-      }, timeout);
-      frameId = requestAnimationFrame(() => {
-        clearTimeout(timer);
-        try {
-          const dataUrl = target.toDataURL('image/png');
-          if (!dataUrl.startsWith('data:image/png;base64,')) throw new Error('canvas has no encodable pixels');
-          const active = globalThis.__xrDevice?.activeSession;
-          resolve({
-            dataUrl, width: target.width, height: target.height, canvas: selector,
-            sessionId: active ? globalThis.__pwWebXR?.sessions.get(active)?.sessionId ?? null : null,
-            capture: 'canvas',
-          });
-        } catch (error) {
-          reject(new Error(`screenshot: cannot capture ${selector}: ${error.message}`));
-        }
-      });
-    }), { selector: canvas, timeout });
-    const { dataUrl, ...info } = capture;
+    if (device !== undefined && !metadata) throw new Error('screenshot: device needs metadata: true');
+    const reference = device === undefined ? undefined : deviceReference(device);
+    const { dataUrl, view, viewReason, ...info } = await this.evaluate(captureCanvas, {
+      selector: canvas, timeout, withView: !!metadata,
+    });
     await fs.writeFile(path, Buffer.from(dataUrl.split(',')[1], 'base64'));
     // Keep the original return value unless metadata is explicitly requested.
-    return metadata ? { path, ...info } : path;
+    if (!metadata) return path;
+    return {
+      path, ...info,
+      view: view && describeView(view),
+      viewReason,
+      ...(reference && { reference }),
+    };
+  }
+
+  /**
+   * Save a capture and its metadata as <name>.png and <name>.json in the test's
+   * output directory, and attach both to the Playwright report.
+   */
+  async attachCapture(testInfo, name, options = {}) {
+    if (typeof name !== 'string' || !/^[\w.-]+$/.test(name)) {
+      throw new Error('attachCapture: name may contain only letters, digits, ".", "_" and "-"');
+    }
+    const path = testInfo.outputPath(`${name}.png`);
+    const json = testInfo.outputPath(`${name}.json`);
+    const capture = await this.screenshot(path, { ...options, metadata: true });
+    await fs.writeFile(json, `${JSON.stringify(capture, null, 2)}\n`);
+    await testInfo.attach(`${name}.png`, { path, contentType: 'image/png' });
+    await testInfo.attach(`${name}.json`, { path: json, contentType: 'application/json' });
+    return capture;
   }
 
   /** Wait the specified milliseconds; does not guarantee frames or app readiness. */
@@ -661,6 +661,59 @@ function degrees(radians) {
 }
 
 // Frustum-aligned: comparable with per-eye field-of-view edges. left/down are negative.
+function deviceReference(device) {
+  const spec = resolveDeviceSpec(device);
+  return {
+    kind: 'device-reference',
+    device: typeof device === 'string' ? device : 'custom',
+    fov: spec.fov,
+    pixelsPerDegree: spec.pixelsPerDegree,
+    note: 'Reference values only. The pixels were rendered with view.views[].projectionMatrix, the emulator projection.',
+  };
+}
+
+// Column-major perspective matrix to the frustum edges in degrees.
+function frustumDegrees(p) {
+  return {
+    left: degrees(Math.atan((p[8] - 1) / p[0])),
+    right: degrees(Math.atan((p[8] + 1) / p[0])),
+    down: degrees(Math.atan((p[9] - 1) / p[5])),
+    up: degrees(Math.atan((p[9] + 1) / p[5])),
+  };
+}
+
+function describeView({ frame, stereoEnabled, ipd, head, controllers, views, deviceProfile }) {
+  const hands = {};
+  for (const [hand, c] of Object.entries(controllers)) {
+    const targetRay = { position: c.position, quaternion: c.quaternion };
+    hands[hand] = {
+      connected: c.connected,
+      targetRay,
+      grip: c.gripOffsetMatrix ? composePose(targetRay, poseFromMatrix(c.gripOffsetMatrix)) : null,
+      gripReason: c.gripOffsetMatrix ? null : 'Device profile has no grip offset',
+    };
+  }
+  return {
+    coordinateSpace: 'iwer-tracking',
+    sampling: 'same-xr-frame',
+    frame,
+    projection: 'emulator',
+    deviceProfile,
+    stereoEnabled,
+    ipd,
+    head,
+    controllers: hands,
+    views: views.map(view => ({
+      eye: view.eye,
+      projectionMatrix: view.projectionMatrix,
+      frustum: frustumDegrees(view.projectionMatrix),
+      viewport: view.viewport,
+      viewportReason: view.viewport ? null : 'No base-layer viewport',
+      fromHead: { position: view.position, quaternion: view.quaternion },
+    })),
+  };
+}
+
 function viewAngles([x, y, z]) {
   return { horizontal: degrees(Math.atan2(x, -z)), vertical: degrees(Math.atan2(y, -z)) };
 }
