@@ -493,3 +493,115 @@ export function readXRState({ timeout, views: sampleViews = true }) {
     }).catch(error => finish(null, String(error)));
   });
 }
+
+// Runs in the page. With withView during a live session, the pixels are read in
+// an XR frame callback together with the poses of that frame: IWER applies poses
+// at frame start, and this callback was queued after the app's callback for the
+// frame. Otherwise (or if no XR frame arrives) falls back to a window frame, and
+// says why there is no view.
+export function captureCanvas({ selector, timeout, withView }) {
+  const target = document.querySelector(selector);
+  if (!(target instanceof HTMLCanvasElement)) throw new Error(`screenshot: no canvas matches ${selector}`);
+  const state = globalThis.__pwWebXR;
+  const device = globalThis.__xrDevice;
+  const session = device?.activeSession;
+  const record = session && state?.sessions.get(session);
+  const live = session && !record?.ended ? session : null;
+  const read = (view, viewReason) => {
+    let dataUrl;
+    try {
+      dataUrl = target.toDataURL('image/png');
+    } catch (error) {
+      throw new Error(`screenshot: cannot capture ${selector}: ${error.message}`);
+    }
+    if (!dataUrl.startsWith('data:image/png;base64,')) {
+      throw new Error(`screenshot: cannot capture ${selector}: canvas has no encodable pixels`);
+    }
+    return {
+      dataUrl, width: target.width, height: target.height, canvas: selector,
+      sessionId: live ? record?.sessionId ?? null : null,
+      capture: 'canvas', view, viewReason,
+    };
+  };
+  const windowFrame = (ms, viewReason) => new Promise((resolve, reject) => {
+    let frameId;
+    const timer = setTimeout(() => {
+      cancelAnimationFrame(frameId);
+      reject(new Error(`screenshot: timed out waiting for a frame (${selector})`));
+    }, ms);
+    frameId = requestAnimationFrame(() => {
+      clearTimeout(timer);
+      try { resolve(read(null, viewReason)); } catch (error) { reject(error); }
+    });
+  });
+  if (!withView) return windowFrame(timeout, null);
+  if (!live) return windowFrame(timeout, device ? 'No active session' : 'IWER runtime not installed');
+
+  const vec = v => [v.x, v.y, v.z];
+  const quat = q => [q.x, q.y, q.z, q.w];
+  const layout = globalThis.IWER?.[state.deviceName]?.controllerConfig?.layout ?? {};
+  const sample = (time, frame, space) => {
+    const pose = frame.getViewerPose(space);
+    if (!pose) return null;
+    const layer = live.renderState.baseLayer;
+    const controllers = {};
+    for (const hand of ['left', 'right']) {
+      const c = device.controllers?.[hand];
+      if (!c) continue;
+      controllers[hand] = {
+        connected: c.connected, position: vec(c.position), quaternion: quat(c.quaternion),
+        gripOffsetMatrix: layout[hand]?.gripOffsetMatrix ? Array.from(layout[hand].gripOffsetMatrix) : null,
+      };
+    }
+    return {
+      frame: { time, capturedAt: performance.now() },
+      deviceProfile: state.deviceName,
+      stereoEnabled: device.stereoEnabled,
+      ipd: device.ipd,
+      head: { position: vec(device.position), quaternion: quat(device.quaternion) },
+      controllers,
+      views: Array.from(pose.views, view => {
+        const vp = layer?.getViewport(view);
+        return {
+          eye: view.eye,
+          position: vec(view.transform.position),
+          quaternion: quat(view.transform.orientation),
+          projectionMatrix: Array.from(view.projectionMatrix),
+          viewport: vp ? { x: vp.x, y: vp.y, width: vp.width, height: vp.height } : null,
+        };
+      }),
+    };
+  };
+  // Half the budget for an XR frame, so a stalled session can still report why.
+  const budget = timeout / 2;
+  return new Promise((resolve, reject) => {
+    let done = false;
+    let frameId;
+    const fallback = reason => {
+      if (done) return;
+      done = true;
+      clearTimeout(timer);
+      live.removeEventListener('end', onEnd);
+      if (frameId !== undefined) live.cancelAnimationFrame(frameId);
+      windowFrame(budget, reason).then(resolve, reject);
+    };
+    const onEnd = () => fallback('Session ended while waiting for an XR frame');
+    const timer = setTimeout(() => fallback(`No XR frame within ${budget}ms`), budget);
+    live.addEventListener('end', onEnd, { once: true });
+    live.requestReferenceSpace('viewer').then(space => {
+      if (done) return;
+      frameId = live.requestAnimationFrame((time, frame) => {
+        if (done) return;
+        done = true;
+        clearTimeout(timer);
+        live.removeEventListener('end', onEnd);
+        try {
+          const view = sample(time, frame, space);
+          resolve(read(view, view ? null : 'Viewer pose unavailable'));
+        } catch (error) {
+          reject(error);
+        }
+      });
+    }, error => fallback(`Viewer reference space unavailable: ${error?.message ?? String(error)}`));
+  });
+}

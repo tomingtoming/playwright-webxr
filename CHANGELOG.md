@@ -1,5 +1,27 @@
 # Changelog
 
+## 0.7.0 — 2026-11-07
+
+### Added
+
+- `screenshot(path, { metadata: true })` now includes `view`: head and controller poses, stereo mode, IPD and each eye's actual projection, frustum and viewport, sampled in the same XR frame as the pixels. When unavailable, `view` is `null` with `viewReason`. Existing metadata fields are unchanged. ([#11](https://github.com/tomingtoming/playwright-webxr/issues/11))
+- `screenshot(..., { device })` adds a `reference` with a device's values, separate from the projection that rendered the image.
+- `attachCapture(testInfo, name, options)` saves `<name>.png` and `<name>.json` and attaches both to the Playwright report.
+- `examples/inspect-views`: `captureViews()` photographs one target from named viewpoints and restores the head pose; `lookAtHeadPose()` computes a pose from a target, distance, yaw, pitch, roll and up. ([#12](https://github.com/tomingtoming/playwright-webxr/issues/12))
+- `headPose()` returns the current headset pose.
+
+### Changed
+
+- During a live session, `screenshot(..., { metadata: true })` reads the pixels in an XR frame callback instead of a window animation frame. Without `metadata`, capture is unchanged.
+
+### Upgrade
+
+```sh
+npm install -D playwright-webxr@^0.7.0
+```
+
+Existing `^0.6.x` ranges do not select this release. Existing metadata fields are unchanged.
+
 ## 0.6.0 — 2026-11-07
 
 ### Added

@@ -1,6 +1,6 @@
 {
   "name": "playwright-webxr",
-  "version": "0.6.0",
+  "version": "0.7.0",
   "description": "Playwright fixture for testing WebXR apps in CI via IWER (no headset required)",
   "main": "./src/index.mjs",
   "scripts": {
@@ -35,6 +35,7 @@
   "exports": {
     ".": "./src/index.mjs",
     "./examples/aim-controller": "./examples/aim-controller.mjs",
+    "./examples/inspect-views": "./examples/inspect-views.mjs",
     "./package.json": "./package.json",
     "./llms.txt": "./llms.txt"
   },
